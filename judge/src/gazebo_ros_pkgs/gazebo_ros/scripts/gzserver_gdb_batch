@@ -1,0 +1,21 @@
+#!/bin/bash
+
+source "$(dirname "$0")/libcommon.sh"
+
+final="$*"
+if [[ "$final" != *libgazebo_ros_paths_plugin.so* ]]; then
+    final="$final -s $(catkin_find --first-only libgazebo_ros_paths_plugin.so)"
+fi
+if [[ "$final" != *libgazebo_ros_api_plugin.so* ]]; then
+    final="$final -s $(catkin_find --first-only libgazebo_ros_api_plugin.so)"
+fi
+
+final="$(relocate_remappings "$final")"
+gdb -batch \
+    -ex "set breakpoint pending on" \
+    -ex "break gazebo::GazeboMavlinkInterface::Load" \
+    -ex run \
+    -ex "catch throw" \
+    -ex continue \
+    -ex bt \
+    --args /usr/bin/gzserver $final

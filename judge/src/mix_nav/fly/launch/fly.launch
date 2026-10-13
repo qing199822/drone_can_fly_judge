@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- 
+        fly.launch - 自主多无人机起飞控制启动文件
+        用法: roslaunch fly fly.launch [参数配置]
+    -->
+    
+    <!-- 1. 定义可配置的启动参数 -->
+    <arg name="drone_name"      default="typhoon_h480" />
+    <arg name="drone_quantity"  default="1" />
+    <arg name="target_altitude" default="4.5" />
+    <arg name="output"          default="screen" />
+    
+    <!-- 2. 启动主控制节点 -->
+    <node name="confident_takeoff_node" 
+          pkg="fly" 
+          type="fly_takeoff" 
+          output="$(arg output)"
+          args="$(arg drone_name) $(arg drone_quantity) $(arg target_altitude)" />
+          
+</launch>

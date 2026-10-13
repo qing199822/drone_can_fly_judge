@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Recursively spawn + start PX4 SITL + MAVROS for each drone.
+         Cluster spawn around (-17,-3): drone_id -> (x, y)
+             x = -17 + 3 * (id % 2)      => -17, -14, -17, -14, -17, -14
+             y = -3  + 3 * (id // 2)     => -3, -3, 0, 0, 3, 3
+         Per-drone mavlink ports (must match typhoon_h480_{id}.sdf):
+             tcp=4560+id  udp=18570+id  sdk=14540+id  gimbal=13030+id -->
+    <arg name="num_drones" default="1"/>
+    <arg name="drone_id" default="0"/>
+    <arg name="est" default="ekf2"/>
+    <arg name="px4_airframe" default="typhoon_h480_zzufly"/>
+
+    <group if="$(eval drone_id &lt; num_drones)">
+        <group ns="typhoon_h480_$(arg drone_id)">
+            <include file="$(dirname)/single_vehicle_spawn_xtd.launch">
+                <arg name="x" value="$(eval -17 + 3 * (drone_id % 2))"/>
+                <arg name="y" value="$(eval -3 + 3 * (drone_id // 2))"/>
+                <arg name="z" value="1"/>
+                <arg name="R" value="0"/>
+                <arg name="P" value="0"/>
+                <arg name="Y" value="0"/>
+                <arg name="vehicle" value="typhoon_h480"/>
+                <arg name="sdf" value="typhoon_h480_zzufly"/>
+                <arg name="px4_airframe" value="$(arg px4_airframe)"/>
+                <arg name="est" value="$(arg est)"/>
+                <arg name="mavlink_udp_port" value="$(eval 18570 + drone_id)"/>
+                <arg name="mavlink_tcp_port" value="$(eval 4560 + drone_id)"/>
+                <arg name="udp_gimbal_port" value="$(eval 13030 + drone_id)"/>
+                <!-- 先错峰生成模型，再启动对应 PX4，避免 PX4 早于 Gazebo 模型完成而退出。 -->
+                <arg name="spawn_delay" value="$(eval 5 + 12 * drone_id)"/>
+                <arg name="sitl_delay" value="$(eval 20 + 12 * drone_id)"/>
+                <arg name="ID" value="$(arg drone_id)"/>
+                <arg name="ID_in_group" value="$(arg drone_id)"/>
+            </include>
+
+            <include file="$(find mavros)/launch/px4.launch">
+                <arg name="fcu_url"
+                     value="$(eval 'udp://:1454' + str(drone_id) + '@localhost:1458' + str(drone_id))"/>
+                <arg name="gcs_url" value=""/>
+                <arg name="tgt_system" value="$(eval 1 + drone_id)"/>
+                <arg name="tgt_component" value="1"/>
+            </include>
+        </group>
+
+        <include file="$(dirname)/spawn_drones.launch">
+            <arg name="num_drones" value="$(arg num_drones)"/>
+            <arg name="drone_id" value="$(eval drone_id + 1)"/>
+            <arg name="est" value="$(arg est)"/>
+            <arg name="px4_airframe" value="$(arg px4_airframe)"/>
+        </include>
+    </group>
+</launch>

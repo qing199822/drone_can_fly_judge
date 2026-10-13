@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<!-- ==========================================================================
+     robocup_judge_drone.launch —— 官方链路第 2 段：逐架拉起 1 架
+     内容与官方 robocup.launch 里的单个 <group ns="typhoon_h480_i"> 完全一致
+     （同样的 single_vehicle_spawn_xtd.launch + mavros px4.launch + 官方端口
+     udp://:2454i@localhost:3458i），只是可以由裁判端按 id 逐架、错峰调用，
+     避免 6 架同时抢 Gazebo spawn 服务。
+
+     用法：
+       roslaunch tools/launch/robocup_judge_drone.launch id:=0 x:=0 y:=-3
+     ========================================================================== -->
+<launch>
+  <arg name="id"/>                                  <!-- 0..5 -->
+  <arg name="x"/>                                   <!-- 世界系出生点 -->
+  <arg name="y"/>
+  <arg name="z" default="0"/>
+  <arg name="R" default="0"/>
+  <arg name="P" default="0"/>
+  <arg name="Y" default="0"/>
+  <arg name="vehicle" default="typhoon_h480"/>
+  <arg name="sdf" default="typhoon_h480"/>
+  <!-- 端口/URL 由调用方传入：roslaunch 的 $(eval ...) 不能嵌在字符串中间，
+       所以这里不做算术，由 start_official_judge.sh 按 id 计算后传入。 -->
+  <arg name="mavlink_tcp_port"/>                    <!-- 4560 + id -->
+  <arg name="mavlink_udp_port"/>                    <!-- 18570 + id -->
+  <arg name="fcu_url"/>                             <!-- udp://:2454i@localhost:3458i -->
+  <arg name="tgt_system"/>                          <!-- 1 + id -->
+  <arg name="ns" default="typhoon_h480_$(arg id)"/>
+
+  <group ns="$(arg ns)">
+    <!-- PX4 SITL + Gazebo 模型 -->
+    <include file="$(find px4)/launch/single_vehicle_spawn_xtd.launch">
+      <arg name="x" value="$(arg x)"/>
+      <arg name="y" value="$(arg y)"/>
+      <arg name="z" value="$(arg z)"/>
+      <arg name="R" value="$(arg R)"/>
+      <arg name="P" value="$(arg P)"/>
+      <arg name="Y" value="$(arg Y)"/>
+      <arg name="vehicle" value="$(arg vehicle)"/>
+      <arg name="sdf" value="$(arg sdf)"/>
+      <arg name="mavlink_udp_port" value="$(arg mavlink_udp_port)"/>
+      <arg name="mavlink_tcp_port" value="$(arg mavlink_tcp_port)"/>
+      <arg name="ID" value="$(arg id)"/>
+      <arg name="ID_in_group" value="$(arg id)"/>
+    </include>
+
+    <!-- MAVROS（官方端口约定：offboard local 34580+i / remote 24540+i） -->
+    <include file="$(find mavros)/launch/px4.launch">
+      <arg name="fcu_url" value="$(arg fcu_url)"/>
+      <arg name="gcs_url" value=""/>
+      <arg name="tgt_system" value="$(arg tgt_system)"/>
+      <arg name="tgt_component" value="1"/>
+    </include>
+  </group>
+</launch>

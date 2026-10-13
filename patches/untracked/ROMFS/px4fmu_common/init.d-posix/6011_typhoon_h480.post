@@ -1,0 +1,11 @@
+
+mixer append /dev/pwm_output0 etc/mixers/mount_legs.aux.mix
+
+# [zzu_fly] 与 rcS 的 offboard start 重复，注释掉避免 port occupied
+# mavlink start -x -u $((34580+px4_instance)) -r 4000 -f -m onboard -o $((24540+px4_instance)) -p
+
+# shellcheck disable=SC2154
+mavlink stream -r 10 -s MOUNT_ORIENTATION -u $((18570+px4_instance))
+# shellcheck disable=SC2154
+mavlink stream -r 50 -s ATTITUDE_QUATERNION -u $((34580+px4_instance))
+mavlink stream -r 10 -s MOUNT_ORIENTATION -u $((34580+px4_instance))

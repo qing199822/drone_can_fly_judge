@@ -1,0 +1,7 @@
+<launch>
+  <node pkg="pose_init" type="pose_transformer_node" name="pose_transformer_under_test" />
+  <test test-name="pose_namespace_dataflow"
+        pkg="pose_init"
+        type="test_pose_namespace.py"
+        time-limit="15" />
+</launch>

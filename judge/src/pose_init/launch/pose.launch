@@ -1,0 +1,25 @@
+    
+<launch>
+    <!-- ===== 环境适配层：出生点布局 =====
+         世界坐标 = mavros 局部 odom 坐标 + 本机出生点。
+         默认 = 本地调试布局（0:(-17,-3) … 5:(-14,3)）。
+         比赛时组委会用官方 XTDrone sitl_config/launch/robocup.launch，
+         出生点是 (0,-3) 系 → 传 spawn_origin_x:=0.0 即可切换。
+         必须与 auto_explore_swarm.launch / scan_map_fuser 的同一组参数一致。 -->
+    <arg name="spawn_origin_x" default="-17.0"/>
+    <arg name="spawn_origin_y" default="-3.0"/>
+    <arg name="spawn_stride_x" default="3.0"/>
+    <arg name="spawn_stride_y" default="3.0"/>
+    <arg name="num_drones" default="6"/>
+    <arg name="vehicle_type" default="typhoon_h480"/>
+    <node pkg="pose_init" type="pose_transformer_node" name="multi_drone_pose_transformer" output="screen">
+        <param name="spawn_origin_x" value="$(arg spawn_origin_x)"/>
+        <param name="spawn_origin_y" value="$(arg spawn_origin_y)"/>
+        <param name="spawn_stride_x" value="$(arg spawn_stride_x)"/>
+        <param name="spawn_stride_y" value="$(arg spawn_stride_y)"/>
+        <param name="num_drones" value="$(arg num_drones)"/>
+        <param name="vehicle_type" value="$(arg vehicle_type)"/>
+    </node>
+</launch>
+
+  

@@ -1,0 +1,10 @@
+# 不提交运行产物与中间物
+__pycache__/
+*.pyc
+*.log
+logs/
+build/
+devel/
+*.tar.gz
+*.old_*
+*.pre_submit_*

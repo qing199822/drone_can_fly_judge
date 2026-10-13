@@ -1,0 +1,62 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Vehicle launch: PX4 SITL + MAVROS for 2 typhoon_h480 drones -->
+    <!-- Requires Gazebo to be already running -->
+    <arg name="est" default="ekf2"/>
+    <!-- typhoon_h480_0 -->
+    <group ns="typhoon_h480_0">
+        <arg name="ID" value="0"/>
+        <arg name="ID_in_group" value="0"/>
+        <arg name="fcu_url" default="udp://:14540@localhost:14580"/>
+        <include file="$(dirname)/single_vehicle_spawn_xtd.launch">
+            <arg name="x" value="-17"/>
+            <arg name="y" value="-3"/>
+            <arg name="z" value="1"/>
+            <arg name="R" value="0"/>
+            <arg name="P" value="0"/>
+            <arg name="Y" value="0"/>
+            <arg name="vehicle" value="typhoon_h480"/>
+            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="px4_airframe" value="iris"/>
+            <arg name="mavlink_udp_port" value="18570"/>
+            <arg name="mavlink_tcp_port" value="4560"/>
+            <arg name="udp_gimbal_port" value="13030"/>
+            <arg name="ID" value="$(arg ID)"/>
+            <arg name="ID_in_group" value="$(arg ID_in_group)"/>
+        </include>
+        <include file="$(find mavros)/launch/px4.launch">
+            <arg name="fcu_url" value="$(arg fcu_url)"/>
+            <arg name="gcs_url" value=""/>
+            <arg name="tgt_system" value="$(eval 1 + arg('ID'))"/>
+            <arg name="tgt_component" value="1"/>
+        </include>
+    </group>
+    <!-- typhoon_h480_1 -->
+    <group ns="typhoon_h480_1">
+        <arg name="ID" value="1"/>
+        <arg name="ID_in_group" value="1"/>
+        <arg name="fcu_url" default="udp://:14541@localhost:14581"/>
+        <include file="$(dirname)/single_vehicle_spawn_xtd.launch">
+            <arg name="x" value="-14"/>
+            <arg name="y" value="-3"/>
+            <arg name="z" value="1"/>
+            <arg name="R" value="0"/>
+            <arg name="P" value="0"/>
+            <arg name="Y" value="0"/>
+            <arg name="vehicle" value="typhoon_h480"/>
+            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="px4_airframe" value="iris"/>
+            <arg name="mavlink_udp_port" value="18571"/>
+            <arg name="mavlink_tcp_port" value="4561"/>
+            <arg name="udp_gimbal_port" value="13031"/>
+            <arg name="ID" value="$(arg ID)"/>
+            <arg name="ID_in_group" value="$(arg ID_in_group)"/>
+        </include>
+        <include file="$(find mavros)/launch/px4.launch">
+            <arg name="fcu_url" value="$(arg fcu_url)"/>
+            <arg name="gcs_url" value=""/>
+            <arg name="tgt_system" value="$(eval 1 + arg('ID'))"/>
+            <arg name="tgt_component" value="1"/>
+        </include>
+    </group>
+</launch>

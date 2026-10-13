@@ -1,0 +1,91 @@
+<launch>
+  <!-- Per-drone exploration: static tf + odom broadcaster + frontier explorer. -->
+  <arg name="vehicle" default="typhoon_h480_0"/>
+  <arg name="scan_topic" default="/$(arg vehicle)/scan"/>
+  <arg name="pose_topic" default="/$(arg vehicle)/mavros/local_position/pose"/>
+  <arg name="cmd_vel_topic" default="/xtdrone/$(arg vehicle)/cmd_vel_flu"/>
+  <arg name="cmd_topic" default="/xtdrone/$(arg vehicle)/cmd"/>
+  <arg name="map_topic" default="/map"/>
+  <arg name="map_frame" default="map"/>
+  <arg name="odom_frame" default="odom"/>
+  <arg name="base_frame" default="base_link"/>
+  <arg name="laser_frame" default="laser_2d"/>
+  <arg name="target_altitude" default="4.5"/>
+  <arg name="save_path" default="/home/lishu2/2025_ZZU_FLY/my_maps/$(arg vehicle)"/>
+
+  <!-- lidar mounted 0.6 m above base_link (above the 0.67 m body box; at 0.2 m
+       the body top entered the scan plane when pitching, occluding most rays),
+       horizontal scan -->
+  <node pkg="tf" type="static_transform_publisher" name="base_to_laser_tf"
+        args="0 0 0.6 0 0 0 $(arg base_frame) $(arg laser_frame) 40" />
+
+  <!-- mavros local_position/pose -> odom -> base_link -->
+  <node pkg="auto_explore" type="odom_broadcaster_node" name="odom_broadcaster" output="screen">
+    <param name="pose_topic" value="$(arg pose_topic)"/>
+    <param name="parent_frame" value="$(arg odom_frame)"/>
+    <param name="child_frame" value="$(arg base_frame)"/>
+  </node>
+
+  <!-- frontier exploration + reactive avoidance + altitude hold + map save -->
+  <node pkg="auto_explore" type="explore_node" name="explore_node" output="screen">
+    <param name="vehicle" value="$(arg vehicle)"/>
+    <param name="scan_topic" value="$(arg scan_topic)"/>
+    <param name="map_topic" value="$(arg map_topic)"/>
+    <param name="pose_topic" value="$(arg pose_topic)"/>
+    <param name="cmd_vel_topic" value="$(arg cmd_vel_topic)"/>
+    <param name="cmd_topic" value="$(arg cmd_topic)"/>
+    <param name="map_frame" value="$(arg map_frame)"/>
+    <param name="base_frame" value="$(arg base_frame)"/>
+    <param name="odom_frame" value="$(arg odom_frame)"/>
+    <param name="target_altitude" value="$(arg target_altitude)"/>
+    <param name="max_lin_x" value="3.0"/>
+    <param name="k_lin" value="0.6"/>
+    <param name="accel_limit" value="1.0"/>
+    <param name="map_save_path" value="$(arg save_path)"/>
+    <param name="goal_topic" value="/move_base_simple/goal"/>
+    <param name="lookahead_dist" value="2.0"/>
+    <param name="occupied_thresh" value="50"/>
+    <param name="manual_goal_timeout" value="120.0"/>
+    <!-- Manual waypoint flight: A* global path + fast straight legs, with
+         lidar-gated braking (never drive into a scanned obstacle) -->
+    <param name="manual_max_yaw_rate" value="0.8"/>
+    <param name="wp_reach_tolerance" value="1.0"/>
+    <param name="manual_brake_dist" value="2.0"/>
+    <param name="manual_replan_interval" value="1.0"/>
+    <param name="plan_inflation" value="0.3"/>
+
+    <!-- Hardcoded waypoints (mavros ENU frame, 相对出生点 (-17,-3) 的坐标)。
+         换算关系：ENU = base0.world 道路坐标 + (17, 3)。
+         原因：mavros local_position 原点是出生点 (-17,-3)（实测 home_position
+         = (0,0) + pose_init 源码 offset{-17,-3,0} 双重确认），不是 Gazebo 世界
+         原点。旧 task_manager 的 mission_*.json 是世界坐标，直接搬过来会偏
+         (17,3)，这就是此前航点"不对"的根因。
+         middle 层（base0）全道路覆盖（每条路全程跑一遍）：
+         base0.world 道路网格 = 纵向 6 条（sandy_path x=-73, road_y_1..5
+         x=-45/-15/45/110/120，y 从 -48.7 到 49.2）+ 横向 3 条
+         （road_x_1..3 y=-45/0/45，x 从 -41.3 到 116.3）。
+         路线：sandy_path 全程 → road_y_1 全程 → 顶部转移 → road_y_5 全程
+         → road_x_1(y=-45) 西行 → road_y_2 全程 → road_y_3 全程 →
+         road_y_4 全程 → road_x_2(y=0) 西行 → road_x_3(y=45) 东行 -->
+    <rosparam param="waypoints">
+      - [-56.0, -43.0]
+      - [-56.0, 5.0]
+      - [-28.0, -44.0]
+      - [-28.0, 51.0]
+      - [137.0, 51.0]
+      - [137.0, -44.0]
+      - [131.0, -42.0]
+      - [-24.3, -42.0]
+      - [2.0, -44.0]
+      - [2.0, 51.0]
+      - [62.0, 51.0]
+      - [62.0, -44.0]
+      - [127.0, -44.0]
+      - [127.0, 51.0]
+      - [131.0, 3.0]
+      - [-24.3, 3.0]
+      - [-24.3, 48.0]
+      - [131.0, 48.0]
+    </rosparam>
+  </node>
+</launch>

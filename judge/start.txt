@@ -1,0 +1,38 @@
+终端 1 — 启动 Gazebo 仿真
+
+  cd /home/lishu2/2025_ZZU_FLY
+  bash 1.sh 6 mission_base0_all_roads.json sim gui base0
+
+  参数含义：1=单机，mission_base0_all_roads.json=任务文件，sim=只起仿真不起任务节点，gui=显示 Gazebo 界面，base0=地图。
+
+  启动后等 30~90 秒（PX4 SITL 开机慢），看到：
+  - Gazebo 窗口弹出，无人机落在 spawn 点（约 x=-17, y=-3）；
+  - 终端提示 mavros / XTDrone bridge ready。
+
+  ▎ 想无界面跑就把 gui 换成 headless。
+
+  终端 2 — 启动建图 + 前沿探索
+
+  cd /home/lishu2/2025_ZZU_FLY
+  source devel/setup.bash
+  roslaunch auto_explore auto_explore_swarm.launch
+
+  这会把 slam_toolbox（建图）+ odom_broadcaster + explore_node（起飞→探索→避障→定高）一起拉起。看到日志 [auto_explore] altitude 3.0 reached, exploring 就说明开始探索了。
+
+  观察（可选，Rviz）
+
+  rosrun rviz rviz
+
+  在 Rviz 里把 Fixed Frame 设成 map，手动 Add：/map（地图）、/typhoon_h480_0/scan（激光）、/goal_marker（当前前沿目标红球）。
+
+  手动存图
+
+  rosrun map_server map_saver -f /home/lishu2/2025_ZZU_FLY/my_maps/typhoon_h480_0
+
+
+清理正在跑的 Gazebo 和整个仿真栈：
+    pkill -9 -f gzserver; pkill -9 -f gzclient; pkill -9 -f roslaunch; pkill -9 -f rosmaster; pkill -9 -f rosout; pkill -9 -f px4; pkill -9 -f mavros; pkill -9 -f xtdrone_mavros_bridge; pkill -9 -f yolo11n.py; pkill -9 -f tracking_node; pkill -9 -f bbox2coord_node; pkill -9 -f target_lookup_service; pkill -9 -f pose_cmd_mux; pkill -9 -f spawn_model; pkill -9 -f static_transform_publisher; pkill -9 -f '1.sh'; fuser -k 11311/tcp; fuser -k 11345/tcp
+
+验证是否清干净：
+
+  ps aux | grep -E 'gzserver|roslaunch|PX4|mavros' | grep -v grep

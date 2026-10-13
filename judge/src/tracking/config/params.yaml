@@ -1,0 +1,240 @@
+# 如果超过该时间没有收到新的 YOLO 检测消息，就认为目标丢失。
+# 调大可以容忍 CPU YOLO 的慢速/卡顿，避免“人物还在画面里但 tracking 提前退出”。
+detection_timeout: 3.0  # 超过该时间没收到新 YOLO 检测消息则认为目标丢失（s）
+
+state_machine:
+  # 目标确认时间 (秒)
+  # 从首次看到目标到确认并开始追踪/冲刺的延迟。
+  # 调参建议:
+  #   - 增加此值可以防止因短暂的错误检测而触发追踪，使系统更稳定。
+  #   - 减少此值可以使系统反应更快，但可能增加对误检的敏感度。
+  #   - 当前用 0.5s 连续可见确认，避免一两帧误检就接管控制。
+  confirmation_duration: 0.5  # 连续看见目标 0.5s 后才接管，避免单帧误检导致原地搜索
+
+  # 目标丢失超时 (秒)
+  # 在进入LOST状态后，如果超过这个时间仍未重新看到目标，则归还控制权。
+  # 调参建议:
+  #   - 增加此值可以让无人机在目标被遮挡时等待更长时间，适用于复杂环境。
+  #   - 减少此值可以更快地放弃丢失的目标并恢复任务，适用于开阔环境。
+  # 按最后一次真实 YOLO 框计时；合成框和空框不会刷新，达到 5s 后释放锁并回巡逻。
+  lost_timeout: 5.0
+
+  # 是否启用 DASH 快速接近模式。
+  # 默认 false：发现目标后直接进入 TRACKING，平稳接近并持续跟踪。
+  # 如果目标太远需要快速拉近距离，可以改为 true，但要注意 DASH 可能因速度过快而冲过头。
+  enable_dash: false  # 是否启用 DASH 快速接近模式
+  sensor_timeout: 0.5  # 激光/深度数据超过此年龄即不再用于避障
+
+  # 丢失缓冲帧数
+  # 在追踪或冲刺状态下，允许目标连续丢失多少帧而不立即切换到LOST状态。
+  # 调参建议:
+  #   - 这是处理检测器偶尔“眨眼”（漏检一两帧）的关键参数。
+  #   - 如果检测器不稳定，可以适当增加此值 (例如 30 = 约 1 秒)。
+  #   - 如果检测器非常可靠，可以减少此值 (例如 5-10) 以更快地响应真正的丢失。
+  lost_buffer_frames: 30  # 最多约 1s；状态机也按真实检测丢失时间进入 LOST
+
+  # --- 2026-09-28：单次追踪时长上限 + 重捕冷却（旧"防抱死"行为，现默认停用）---
+  # 为什么曾经需要：裁判判"找到并消除"要求我们连续 15s 报出误差 <1m 的坐标，正常情况下
+  #   20~25s 就能走完（人物随即被删除）。若这条链路没走通（例如关掉真值兜底、深度解算
+  #   误差过大），tracker 会一直抱着同一个人不放：本轮 UAV2 被 red4 拖住 325s（占全局
+  #   59%），期间任务级 PAUSE，完全没巡逻。超过上限就归还控制权。
+  #
+  # 正常持续可见的目标由裁判消除后归还；真实检测连续丢失 5s 时提前归还。
+  return_only_on_elimination: true  # 正常可见目标等待裁判消除；真实检测丢失 5s 时仍归还
+  # 说明（return_only_on_elimination=true 时）：
+  #   * 判定"裁判消除"的两个权威信号仍照旧归还控制权：
+  #       ① /left_actors 名单里不再包含该 actor（裁判权威信号，最及时）；
+  #       ② /gazebo/model_states 中该 actor 连续缺失 >= state_machine/max_lost_seconds（5s）
+  #          （Gazebo 真删模型有 ~20s 延迟，属"消除已发生"的滞后确认）。
+  #   * 普通 90s 会话上限仍被 gate；真实检测丢失 5s 和裁判消除不受它限制。
+  #   * 长时间没有真实 YOLO 框时，lost_timeout 会释放目标并恢复巡逻。
+  #     允许普通 90s 会话上限提前归还（任选其一）：
+  #       ① 把下面这行改成 false（六机全生效，最稳，推荐）；
+  #       ② 命令行/launch 扁平私有参数覆盖（优先级最高）：
+  #            rosrun tracking tracking_node <type> <id> _return_only_on_elimination:=false
+  #          或 launch 里在 tracking 节点内写
+  #            <param name="return_only_on_elimination" value="false"/>
+  #          （代码同时接受 state_machine/return_only_on_elimination 与扁平同名私有参数）
+
+  max_tracking_seconds: 90.0        # 单次追踪最长时长（s）；<=0 表示不限制。★当 return_only_on_elimination=true（默认）时，"超时归还"本身不生效（被 gate）；但它仍是"只有合成框续命"例外（synthetic_only_release_seconds）的 90s 上限。仅在 =false 时超时归还按旧行为生效
+  reacquire_cooldown_seconds: 60.0  # 非消除类归还后的重捕冷却；return_only_on_elimination=false 的普通超时、真实检测丢失和强制归还都适用
+
+  # --- 2026-09-28 任务1：目标锁租约心跳（配合 look_up 的 ~lock_lease_seconds，默认 20s）---
+  # 持有目标期间，tracker 每 lock_heartbeat_seconds 用现有 request 服务再请求一次同一 target；
+  # look_up 侧按 callerid 判定"同一 requester + 同一 target = 续租"，于是租约不过期。
+  # 心跳被拒（success=false）= 锁已被其它机按"租约过期"抢占 → tracker 归还控制权并释放目标锁。
+  # 必须明显小于 look_up 的租约（20s），否则正常追踪也会被抢。设 0 = 关闭心跳（不续租）。
+  lock_heartbeat_seconds: 5.0  # 目标锁续租心跳周期（s）；look_up 侧须同时设置 ~lock_lease_seconds（默认 20）
+
+  # --- 长会话且只剩合成框时的额外归还条件 ---
+  # 触发（三条同时满足）：① 追踪会话已超过 max_tracking_seconds（90s）；
+  #   ② 最近一次**真实** YOLO 框的年龄 > synthetic_only_release_seconds（5s）
+  #      —— 真实框 probability=float(conf)<1.0，而 yolo11n.py 的真值合成框 probability=1.0，
+  #      所以"真框年龄"不会被合成框刷新（即"当前只有合成框在续命"）；
+  #   ③ /gazebo/model_states 新鲜且该 actor 仍在真值列表里（= 不是裁判消除，排除误判）。
+  # 行为：强制归还控制权 + 释放目标锁；不写 completed_target_ids_（人物并未被消除）。
+  # 关闭此额外条件不影响上面的 5s 真实检测丢失退出。
+  synthetic_only_release_seconds: 5.0   # 真实 YOLO 框年龄阈值（s）；超过它 = 只有合成框在续命
+  synthetic_only_release_enabled: true   # true=启用合成框例外（默认）；false=一键关闭该例外
+
+  # 初次捕获时短暂限速；锁定后的首个空帧也保持小角度搜索，避免把目标扫出视野。
+  initial_tracking_yaw_window: 1.0  # TRACKING 前 1 秒（s）
+  initial_tracking_yaw_limit: 0.3   # 初期偏航速度上限（rad/s）；避免锁定首帧空帧时扫出视野
+  tracking_edge_margin_px: 80.0     # 目标中心距 640px 画面边缘小于此值时降低转向与横移
+  tracking_edge_yaw_limit: 0.25     # 目标贴近画面边缘时的偏航速度上限（rad/s）
+  tracking_edge_lateral_limit: 0.25 # 目标贴近画面边缘时的横向速度上限（m/s）
+  tracking_yaw_slew_limit: 1.2      # TRACKING 最终偏航指令变化率上限（rad/s^2）
+
+  # 目标边界框面积 (像素^2)
+  # 控制器试图维持的目标理想面积。这是前后速度控制的核心。
+  # 值越大，无人机越靠近目标；值越小，保持的追踪距离越远。
+  # 人物以 2m/s 横向移动时，保持更远的观察距离，为转向和重新识别留出时间。
+  target_bbox_area: 1200.0  # 期望目标边界框面积（px^2），越小保持越远
+
+  # --- Dash (冲刺) 相关的参数 ---
+  # 触发冲刺的目标面积阈值 (像素^2)
+  # 当确认的目标面积小于此值时，状态机将进入DASH状态而不是TRACKING。
+  # 调参建议:
+  #   - 此值应远小于 `target_bbox_area`。
+  #   - 用于快速接近距离非常远的小目标。
+  dash_trigger_area: 350.0  # 触发冲刺的目标面积阈值（px^2）
+
+  # 冲刺结束的目标面积阈值 (像素^2)
+  # 在冲刺过程中，如果目标面积达到此值，则提前结束冲刺并进入追踪状态。
+  # 调参建议:
+  #   - 此值应介于 `dash_trigger_area` 和 `target_bbox_area` 之间。
+  #   - 设置得太高可能导致冲过头。
+  area_exit_threshold: 500.0  # 冲刺提前结束的面积阈值（px^2）
+  
+  # 冲刺持续时间 (秒)
+  # 冲刺状态的最长时间，即使面积未达到阈值，超时后也会退出。
+  # 调参建议:
+  #   - 这是一个安全措施，防止无人机因看不到目标而无限冲刺。
+  dash_duration: 1.5  # 冲刺状态最大持续时间（s）
+  
+  # 允许冲刺的最低高度 (米)
+  # 无人机只有高于此高度时才会触发冲刺，以确保安全。
+  min_dash_height: 3.0  # 允许冲刺的最低高度（m）
+
+  # --- 高度控制相关的参数 ---
+  # 进入 TRACKING 后调整到理想追踪高度的延迟 (秒)。
+  # 经过这段时间后，无人机会爬升/下降到 lowered_tracking_height。
+  height_lower_delay: 1.5  # 进入 TRACKING 后调整到追踪高度的延迟（s）
+  
+  # 理想追踪高度 (米)
+  # 与巡逻高度接近，避免追踪时下降到建筑物侧面高度。
+  lowered_tracking_height: 4.3  # 理想追踪高度（m）
+  alt_floor_guard: 4.2          # 真值高度低于此值时强制爬升（m）
+  alt_climb_rate: 0.6           # 低高度保护的最小爬升速度（m/s）
+
+  # --- 巡航过渡相关的参数 ---
+  # 判断为巡航状态的速度阈值 (m/s)
+  # 如果无人机在看到目标前的速度高于此值，则认为是从巡航切换到追踪，会有一个平滑过渡。
+  cruise_speed_threshold: 1.5  # 判定为巡航状态的速度阈值（m/s）
+
+  # 从巡航到追踪的过渡时间 (秒)
+  # 在这段时间内，前后速度会从巡航速度平滑地过渡到控制器计算的速度。
+  transition_duration: 0.3  # 从巡航到追踪的平滑过渡时间（s）
+
+
+# ------------------------------------------------------------------------------
+# Controller Parameters (`controller`)
+# ------------------------------------------------------------------------------
+# These parameters directly affect the drone's movement commands.
+controller:
+  # 距离保持开关：true = 跟随人物前后移动（面积小→前进，面积大→后退）。
+  # 后退速度被单独限制在 max_backward_speed，避免后退太猛导致目标丢失。
+  enable_distance_control: true  # 距离保持开关：true=跟随人物前后移动
+
+  # --- 核心PD控制器增益 ---
+  # 侧向位置 (vy) 控制
+  # 2026-09-24 调整：原 0.0120 + 0.0040 → 0.0040 + 0.0015。
+  # 原因：之前 Kp_pos_y 过高（达源码默认 4.8x），u_error=50 px 已接近 max_speed_y 满偏；
+  #        与 vel_yaw（同一 u_error）双重修正导致过冲-回摆。本轮把侧向权限一并降到 0.8（max_speed_y=0.8），
+  #        让横移变成"微调"而非"主导"。
+  Kp_pos_y: 0.0040  # 侧向位置（vy）PD 控制比例增益
+  Kd_pos_y: 0.0015  # 侧向位置（vy）PD 控制微分增益
+  # 偏航速度 (yaw) 控制
+  # 2026-09-24 调整：原 -0.0100 + -0.0040 → -0.0040 + -0.0025；max_speed_yaw 0.5 → 0.8。
+  # 原因：之前 Kp_yaw=-0.0100 在 u_error=±50 px 就 clamp 到 0.5 rad/s（开关式）。
+  #        把 Kp 降到 -0.0040 + max_yaw 提到 0.8 后，满偏 px=200（比例区更宽）。
+  Kp_yaw: -0.0040 # 偏航 PD 控制比例增益（负值→目标在右边 u_error>0 时 yaw_vel<0 顺时针）
+  Kd_yaw: -0.0025  # 偏航 PD 控制微分增益
+  # 高度 (vz) 控制
+  Kp_z_altitude: 1.0  # 高度（vz）控制比例增益
+
+  # --- 速度与角度限制 ---
+  # 调参建议:
+  #   - 这些值应根据无人机的性能和任务的激进程度进行调整。
+  #   - 对于初始测试，可以设置得保守一些。
+  max_speed_x: 2.5  # 前进方向最大速度（m/s）
+  max_speed_y: 0.8  # 侧向最大速度（m/s），2026-09-24 由 2.0 下调，避免横移与偏航双冲
+  max_speed_z: 1.5  # 垂直方向最大速度（m/s）
+  max_speed_yaw: 0.8  # 最大偏航角速度（rad/s），2026-09-24 由 0.5 上调，配合 Kp_yaw 降权让 200 px 才饱和
+
+  # 基于高度的动态速度限制：
+  #   speed_limit = max(min(MAX_SPEED_X_, height_factor*h), MIN_SPEED_LIMIT_)
+  # 注意：MAX_SPEED_X_ 与 MIN_SPEED_LIMIT_ 不能互相超过；
+  #   min=3.0 配合 max=2.5 时，上限恒被 min 顶死 = 3.0，max_speed_x 完全失效。
+  # 2026-09-23：调到 1.0 让 max_speed_x=2.5 实际生效，降低撞墙动能。
+  height_speed_factor: 2.0 # 速度上限 = 此系数 * 高度
+  min_speed_limit: 1.0     # 即使在低空，也保证至少有这个速度上限
+
+  # 最大后退速度 (m/s)：跟随人物时允许的最大后退速度。
+  # 允许跟上人物 2m/s 的接近速度；最终指令仍受 360° 激光避障限制。
+  max_backward_speed: 2.0  # 跟随人物时最大后退速度（m/s）
+
+  # --- 压头后退 (Pitch Backward) 策略 ---
+  # 调参建议:
+  #   - 这是一个高级功能，用于在快速后退时通过压低机头（pitch）来辅助，而不是单纯依赖后退速度。
+  #   - 如果后退时高度控制不稳定（掉高严重），可以增加 throttle_reduction_ratio。
+  #   - 如果后退动作太激进，可以减小 pitch_to_velocity_ratio。
+  use_pitch_backward: false  # 是否启用压头后退策略
+  max_backward_pitch: -0.5  # 最大后退俯仰角 (弧度, 负值为机头向下)
+  pitch_to_velocity_ratio: 0.2  # 后退速度到俯仰角的转换比值
+  throttle_reduction_ratio: 0.45  # 压头后退时油门降低比例
+  backward_threshold: -0.5 # 触发纯压头后退的速度阈值 (m/s)
+  backward_transition_start: -0.5 # 开始混合控制的阈值 (m/s)
+
+  # --- 前后速度激活函数 (`enhanced_activator`) ---
+  # 调参建议:
+  #   - 这些参数共同决定了无人机如何根据目标面积误差来加减速，影响追踪的平滑性和响应速度。
+  #   - gain_multiplier: 总体增益。越大，加减速越快。
+  #   - exp_factor: 控制曲线的陡峭程度。越大，在小误差时反应越灵敏。
+  #   - base_sensitivity: 基础灵敏度，即使目标静止时也存在。
+  #   - max_additional_sensitivity: 根据目标移动速度增加的额外灵敏度。
+  activator:
+    base_sensitivity: 0.5  # 基础灵敏度：目标静止时也存在的响应灵敏度
+    max_additional_sensitivity: 1.0  # 根据目标移动速度增加的额外灵敏度
+    scaling_factor: 0.01  # 灵敏度缩放系数
+    gain_multiplier: 2.0  # 前后速度激活函数总体增益
+    exp_factor: 1.3  # 激活函数曲线陡峭系数
+    speed_retention_factor: 0.8  # 速度保持系数
+
+
+# ------------------------------------------------------------------------------
+# Output Smoother Parameters (`smoother`)
+# ------------------------------------------------------------------------------
+# These parameters control the final command smoothing filters.
+# 只有在状态机中集成了OutputSmoother时才生效。
+smoother:
+  # 四级低通滤波器的 Alpha 值 (0 < alpha <= 1)
+  # Alpha 越大，滤波器响应越快，平滑效果越弱。
+  # Alpha 越小，滤波器响应越慢，平滑效果越强，但延迟也越大。
+  # 调参建议:
+  #   - 保持 alpha_1 > alpha_2 > alpha_3 > alpha_4 的趋势，形成一个级联的、从快到慢的滤波链。
+  #   - 如果无人机动作有高频抖动，可以全面减小这些值。
+  #   - 如果无人机响应太“迟钝”，可以全面增加这些值。
+  lpf_alpha_1: 0.90  # 一级低通滤波 Alpha 值（0<alpha<=1）
+  lpf_alpha_2: 0.80  # 二级低通滤波 Alpha 值（0<alpha<=1）
+  lpf_alpha_3: 0.70  # 三级低通滤波 Alpha 值（0<alpha<=1）
+  lpf_alpha_4: 0.60  # 四级低通滤波 Alpha 值（0<alpha<=1）
+
+  # 速率限制器 (单位: m/s^2 或 rad/s^2)
+  # 限制了速度指令的最大变化率（即加速度）。
+  # 调参建议:
+  #   - 这是防止无人机突然加减速的最有效工具。
+  #   - 如果无人机飞行非常“冲”，应减小这些值。
+  #   - 如果无人机感觉“软弱无力”，可以增加这些值。
+  rate_limit_xyz: 8.0  # m/s^2
+  rate_limit_yaw: 2.5  # rad/s^2

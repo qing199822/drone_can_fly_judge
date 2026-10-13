@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>fly</name>
+  <version>1.0.0</version>
+  <description>
+    Autonomous takeoff and hover control package for multiple drones.
+    This package provides confident takeoff functionality for drone swarms.
+  </description>
+  
+  <maintainer email="your-email@example.com">Your Name</maintainer>
+  <license>BSD</license>
+  
+  <author email="your-email@example.com">Your Name</author>
+  
+  <url type="website">http://wiki.ros.org/fly</url>
+  <url type="bugtracker">https://github.com/your-repo/fly/issues</url>
+  <url type="repository">https://github.com/your-repo/fly</url>
+
+  <!-- 构建依赖 -->
+  <buildtool_depend>catkin</buildtool_depend>
+  
+  <!-- 构建时依赖 -->
+  <build_depend>roscpp</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>topic_tools</build_depend>
+  
+  <!-- 运行时依赖 -->
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
+  
+  <!-- 导出 -->
+  <export>
+    <!-- 可选：其他工具依赖 -->
+  </export>
+</package>

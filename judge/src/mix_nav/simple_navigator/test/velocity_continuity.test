@@ -1,0 +1,40 @@
+<launch>
+  <node pkg="simple_navigator" type="simple_navigator_node"
+        name="waypoint_navigator_typhoon_h480_0"
+        args="typhoon_h480 0" output="screen">
+    <rosparam subst_value="true">
+      Kp_linear: 0.6
+      MAX_SPEED_X: 6.0
+      MAX_ACCEL_X: 2.0
+      MAX_DECEL_X: 12.0
+      YAW_ALIGN_THRESHOLD: 0.5235987756
+    </rosparam>
+  </node>
+  <node pkg="simple_navigator" type="simple_navigator_node"
+        name="waypoint_navigator_typhoon_h480_1"
+        args="typhoon_h480 1" output="screen">
+    <rosparam subst_value="true">
+      Kp_linear: 0.6
+      MAX_SPEED_X: 6.0
+      MAX_ACCEL_X: 2.0
+      MAX_DECEL_X: 12.0
+      YAW_ALIGN_THRESHOLD: 0.5235987756
+    </rosparam>
+  </node>
+  <node pkg="simple_navigator" type="simple_navigator_node"
+        name="waypoint_navigator_typhoon_h480_2"
+        args="typhoon_h480 2" output="screen">
+    <rosparam subst_value="true">
+      Kp_linear: 0.6
+      MAX_SPEED_X: 6.0
+      MAX_ACCEL_X: 2.0
+      MAX_DECEL_X: 12.0
+      YAW_ALIGN_THRESHOLD: 0.5235987756
+    </rosparam>
+  </node>
+
+  <test test-name="velocity_continuity"
+        pkg="simple_navigator"
+        type="test_velocity_continuity.py"
+        time-limit="20" />
+</launch>

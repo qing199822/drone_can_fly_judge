@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- 
+    目标查找服务启动文件
+    启动 target_lookup_service 节点
+    -->
+
+    <!-- 可配置参数 -->
+    <arg name="log_level" default="info" doc="debug, info, warn, error, fatal"/>
+    <arg name="output" default="screen" doc="output: screen, log"/>
+    <arg name="respawn" default="true" doc="is_resume"/>
+    <arg name="clear_params" default="true" doc="param"/>
+
+    <!-- 目标查找服务节点 -->
+    <node name="target_lookup_service" 
+          pkg="look_up" 
+          type="target_lookup_service" 
+          output="$(arg output)"
+          respawn="$(arg respawn)"
+          clear_params="$(arg clear_params)">
+        
+        <!-- 设置日志级别 -->
+        <env name="ROSCONSOLE_CONFIG_FILE" 
+             value="$(find look_up)/config/console.conf" if="$(eval arg('log_level') == 'debug')"/>
+        
+        <!-- 如果日志级别是debug，设置详细输出 -->
+        <param name="log_level" value="$(arg log_level)" if="$(eval arg('log_level') == 'debug')"/>
+    </node>
+
+</launch>

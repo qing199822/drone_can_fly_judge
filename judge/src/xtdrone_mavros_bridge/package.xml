@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>xtdrone_mavros_bridge</name>
+  <version>0.1.0</version>
+  <description>Compatibility bridge from the XTDrone command topics to MAVROS.</description>
+  <maintainer email="lishu2@example.com">lishu2</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+</package>

@@ -1,0 +1,52 @@
+<launch>
+    <!--
+    ==============================================================================
+                    Multi-Drone Tracking Launcher (Recursive)
+    ==============================================================================
+    This launch file starts the C++ tracking node for multiple drones.
+    It uses a recursive approach to avoid manual duplication for each drone.
+
+    Usage:
+      - For a single drone (e.g., typhoon_h480_0):
+        roslaunch tracking tracking.launch
+
+      - For multiple drones (e.g., 6 drones from 0 to 5):
+        roslaunch tracking tracking.launch num_drones:=6
+    -->
+
+    <!-- ======================= Arguments ======================= -->
+
+    <arg name="num_drones" default="1" />
+    <arg name="drone_index" default="0" />
+    <arg name="vehicle_type" default="typhoon_h480" />
+
+    <!-- ======================= Recursive Logic ======================= -->
+
+    <group>
+        <arg name="next_drone_index" value="$(eval drone_index + 1)" />
+        
+        <!-- 【最终修正】: 将 '<' 替换为 '&lt;' 以符合XML语法 -->
+        <include file="$(find tracking)/launch/tracking.launch" if="$(eval next_drone_index &lt; num_drones)">
+            <arg name="num_drones" value="$(arg num_drones)" />
+            <arg name="drone_index" value="$(arg next_drone_index)" />
+            <arg name="vehicle_type" value="$(arg vehicle_type)" />
+        </include>
+    </group>
+
+    <!-- ======================= Node Launching Section ======================= -->
+
+    <group ns="$(arg vehicle_type)_$(arg drone_index)">
+
+        <node name="tracking_node"
+              pkg="tracking"
+              type="tracking_node"
+              output="screen"
+              args="$(arg vehicle_type) $(arg drone_index)">
+
+              <rosparam file="$(find tracking)/config/params.yaml" command="load" />
+              <param name="respawn" type="bool" value="true" />
+        </node>
+
+    </group>
+
+</launch>

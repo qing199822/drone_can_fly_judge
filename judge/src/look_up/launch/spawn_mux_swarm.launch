@@ -1,0 +1,39 @@
+<launch>
+  <arg name="num_drones" doc="The total number of MUX nodes to launch."/>
+  <arg name="vehicle_type" default="typhoon_h480" doc="The vehicle type, used for topic names."/>
+  <arg name="_counter" default="$(arg num_drones)"/>
+  <group unless="$(eval _counter == 0)">
+
+      <!-- 计算当前这次递归需要处理的无人机ID。
+           例如，如果num_drones=3:
+           - 第一次 (_counter=3): drone_id = 3 - 3 = 0
+           - 第二次 (_counter=2): drone_id = 3 - 2 = 1
+           - 第三次 (_counter=1): drone_id = 3 - 1 = 2
+      -->
+      <arg name="drone_id" value="$(eval num_drones - _counter)" />
+      <!-- 打印一些日志，方便调试，确认启动了哪个ID -->
+      <group ns="$(arg vehicle_type)_$(arg drone_id)">
+          <arg name="mux_output" value="/xtdrone/$(arg vehicle_type)_$(arg drone_id)/cmd_vel_flu"/>
+          <arg name="input_takeoff" value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/takeoff/cmd_vel"/>
+          <arg name="input_ego" value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/navigator/cmd_vel"/>
+          <arg name="input_external" value="/$(arg vehicle_type)_$(arg drone_id)/mux_inputs/external/pose_cmd"/>
+          <arg name="mux_name" default="pose_cmd_mux"/>
+
+          <!-- 启动一个MUX节点。使用<group>和ns，所有话题和服务都会自动带上无人机的前缀，例如服务会变成 /typhoon_h480_0/pose_cmd_mux/select -->
+          <node pkg="topic_tools" type="mux" name="$(arg mux_name)"
+                args="$(arg mux_output) $(arg input_takeoff) $(arg input_ego) $(arg input_external) mux:=$(arg mux_name)"
+                output="screen">
+            <!-- 默认走 navigator（auto_explore 导航）；tracking 识别行人后切 external -->
+            <param name="initial_topic" value="$(arg input_ego)"/>
+          </node>
+      </group>
+      <!-- 递归调用自己！ -->
+      <include file="$(find look_up)/launch/spawn_mux_swarm.launch">
+          <arg name="num_drones" value="$(arg num_drones)"/>
+          <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+          <arg name="_counter" value="$(eval _counter - 1)" />
+      </include>
+
+  </group>
+
+</launch>

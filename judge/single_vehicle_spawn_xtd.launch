@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- XTDrone-style SITL launch with delayed model/PX4 startup. -->
+    <arg name="x" default="0"/>
+    <arg name="y" default="0"/>
+    <arg name="z" default="0"/>
+    <arg name="R" default="0"/>
+    <arg name="P" default="0"/>
+    <arg name="Y" default="0"/>
+    <arg name="est" default="ekf2"/>
+    <arg name="vehicle" default="iris"/>
+    <arg name="sdf" default=""/>
+    <arg name="px4_airframe" default="iris"/>
+    <arg name="ID" default="0"/>
+    <arg name="ID_in_group" default="0"/>
+    <arg name="mavlink_udp_port" default="14560"/>
+    <arg name="mavlink_tcp_port" default="4560"/>
+    <arg name="udp_gimbal_port" default="13030"/>
+
+    <env name="PX4_SIM_MODEL" value="$(arg px4_airframe)"/>
+    <env name="PX4_ESTIMATOR" value="$(arg est)"/>
+
+    <arg name="sdf_model" default="$(arg sdf)"/>
+    <arg name="sdf_model" if="$(eval arg('sdf') == '')" default="$(arg vehicle)"/>
+    <!-- Keep the SITL binary, ROMFS, and Gazebo plugins from the same PX4 tree. -->
+    <arg name="px4_root" default="/home/lishu2/PX4_Firmware"/>
+    <arg name="sdf_file"
+         value="$(arg px4_root)/Tools/sitl_gazebo/models/$(arg sdf_model)/$(arg vehicle)_$(arg ID).sdf"/>
+
+    <arg name="spawn_delay" default="6"/>
+    <arg name="sitl_delay" default="10"/>
+
+    <node name="spawn_$(arg vehicle)_$(arg ID)" output="screen"
+          pkg="xtdrone_mavros_bridge" type="spawn_model_serialized.py"
+          args="$(arg spawn_delay) -sdf -model $(arg vehicle)_$(arg ID) -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg R) -P $(arg P) -Y $(arg Y) -file $(arg sdf_file)"/>
+
+    <!-- roslaunch has no interactive stdin, so PX4 must run without pxh. -->
+    <node name="sitl_$(arg ID)" pkg="xtdrone_mavros_bridge" type="wait_for_model.py" output="screen"
+          args="$(arg vehicle)_$(arg ID) $(arg px4_root)/build/px4_sitl_default/bin/px4 $(arg px4_root)/ROMFS/px4fmu_common -s etc/init.d-posix/rcS -i $(arg ID) -w /tmp/sitl_$(arg vehicle)_$(arg ID) -d"/>
+</launch>

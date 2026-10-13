@@ -1,0 +1,57 @@
+<launch>
+  <!-- Top-level autonomous exploration + mapping.
+       Run AFTER the simulator / PX4 / mavros / XTDrone bridge are up
+       (e.g. `bash 1.sh 1 mission_base0_all_roads.json sim gui base0`).
+       Usage: roslaunch auto_explore auto_explore.launch vehicle:=typhoon_h480_0 -->
+  <arg name="vehicle" default="typhoon_h480_0"/>
+  <arg name="scan_topic" default="/$(arg vehicle)/scan"/>
+  <arg name="scan_filtered_topic" default="/$(arg vehicle)/scan_filtered"/>
+  <arg name="cut_radius" default="0.7"/>
+  <arg name="map_topic" default="/map"/>
+  <arg name="map_frame" default="map"/>
+  <arg name="odom_frame" default="odom"/>
+  <arg name="base_frame" default="base_link"/>
+  <arg name="laser_frame" default="laser_2d"/>
+  <arg name="target_altitude" default="4.5"/>
+  <arg name="save_path" default="/home/lishu2/2025_ZZU_FLY/my_maps/$(arg vehicle)"/>
+  <arg name="rviz" default="true"/>
+
+  <!-- Cut the drone's own body (self-hits) out of the scan before SLAM so it
+       does not trace the drone's flight path into the map, plus tilt
+       compensation + ground-hit removal (fast flight pitches the body 10-18
+       deg, which otherwise smears walls and injects a ground ring). -->
+  <node pkg="auto_explore" type="scan_self_filter_node" name="scan_self_filter"
+        output="screen">
+    <param name="scan_topic" value="$(arg scan_topic)"/>
+    <param name="scan_filtered_topic" value="$(arg scan_filtered_topic)"/>
+    <param name="pose_topic" value="/$(arg vehicle)/mavros/local_position/pose"/>
+    <param name="cut_radius" value="$(arg cut_radius)"/>
+    <param name="laser_z_offset" value="0.6"/>
+    <param name="ground_alt_offset" value="1.0"/>
+    <param name="ground_margin" value="0.8"/>
+  </node>
+
+  <include file="$(find auto_explore)/launch/slam.launch">
+    <arg name="scan_topic" value="$(arg scan_filtered_topic)"/>
+    <arg name="map_frame" value="$(arg map_frame)"/>
+    <arg name="odom_frame" value="$(arg odom_frame)"/>
+    <arg name="base_frame" value="$(arg base_frame)"/>
+  </include>
+
+  <include file="$(find auto_explore)/launch/explore.launch">
+    <arg name="vehicle" value="$(arg vehicle)"/>
+    <arg name="scan_topic" value="$(arg scan_filtered_topic)"/>
+    <arg name="map_topic" value="$(arg map_topic)"/>
+    <arg name="map_frame" value="$(arg map_frame)"/>
+    <arg name="odom_frame" value="$(arg odom_frame)"/>
+    <arg name="base_frame" value="$(arg base_frame)"/>
+    <arg name="laser_frame" value="$(arg laser_frame)"/>
+    <arg name="target_altitude" value="$(arg target_altitude)"/>
+    <arg name="save_path" value="$(arg save_path)"/>
+  </include>
+
+  <!-- rviz: live /map + laser scan + goal/path markers (scan topic auto-
+       rewritten to /<vehicle>/scan_filtered by launch_rviz.py). -->
+  <node if="$(arg rviz)" pkg="auto_explore" type="launch_rviz.py" name="rviz"
+        args="$(arg vehicle) $(find auto_explore)/explore.rviz"/>
+</launch>

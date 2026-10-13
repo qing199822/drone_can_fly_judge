@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>tracking</name>
+  <version>1.0.0</version>
+  <description>
+    A C++ package for multi-drone human tracking using an IMM Kalman Filter and a state machine.
+  </description>
+
+  <maintainer email="your_email@todo.com">Your Name</maintainer>
+  <license>TODO</license>
+
+  <!-- 1. 构建工具依赖 -->
+  <!-- catkin是所有ROS包必需的构建工具 -->
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- 2. 构建依赖 (编译时需要的包) -->
+  <!-- roscpp: C++ ROS核心库 -->
+  <build_depend>roscpp</build_depend>
+  <!-- std_msgs 和 geometry_msgs: 标准消息类型 -->
+  <build_depend>std_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <!-- darknet_ros_msgs: YOLO检测框消息 -->
+  <build_depend>darknet_ros_msgs</build_depend>
+  <!-- topic_tools: MUX切换服务 -->
+  <build_depend>topic_tools</build_depend>
+  <!-- look_up: 您的自定义目标请求/释放服务 -->
+  <build_depend>look_up</build_depend>
+
+  <!-- 3. 执行依赖 (运行时需要的包) -->
+  <!-- 这些通常与构建依赖相同 -->
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>darknet_ros_msgs</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
+  <exec_depend>look_up</exec_depend>
+
+  <!-- 
+    注意: Eigen库是一个系统依赖，而不是一个标准的ROS包。
+    我们通过CMakeLists.txt中的find_package(Eigen3)来找到它。
+    您需要确保Eigen已经安装在您的系统上 (例如: sudo apt-get install libeigen3-dev)
+  -->
+
+</package>

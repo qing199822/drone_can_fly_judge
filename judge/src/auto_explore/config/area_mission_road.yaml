@@ -1,0 +1,158 @@
+# ROAD 阶段调参（2026-09-14）
+#
+# 背景：2~5 号无人机在 ROAD 阶段"原地旋转 / 几乎不前进"。
+# 实测证据：道路分割正常（accepted=1、yolo_conf 0.92~0.97）、原始/过滤激光都在更新，
+#           但最终 linear.x ≈ 0（3 号 0.02~0.05），5 号同时保留 angular.z ±0.8 rad/s。
+# 结论：问题在 ROAD-MPPI + 安全层把前向速度压到 0 却保留偏航，不是 YOLO/后处理。
+#
+# 本文件由 launch/auto_explore_swarm.launch 的 6 个机块统一加载到各自的
+# /typhoon_h480_<id>/area_mission_node 私有命名空间，可直接改这里调参。
+
+# ① ROAD 前进速度下限：只有"软降速"（MPPI 保守）且前向净空充足时才兜底，
+#    硬停路径（深度急停 / TTC 硬刹车 / 激光无效 / MPPI 无效 / 位姿异常）不受影响。
+road_min_speed_floor: 1.0            # 下限速度（m/s），建议 0.8~1.2
+road_min_speed_floor_clearance: 3.0  # 前向净空必须大于此值才允许兜底（m）
+
+# ② 道路方向低通 + 单周期限幅：抑制候选分支抖动直接进 MPPI（5 号曾频繁切分支）。
+road_guidance_filter_alpha: 0.25     # EMA 系数（越小越稳，越大越灵敏）
+road_guidance_max_step: 0.05         # 单控制周期的最大方向变化（归一化单位，0.05 ≈ 1 rad/s）
+# 分支切换滞回与确认周期（原来是 0.18 / 15）
+road_candidate_switch_margin: 0.35
+road_candidate_confirm_cycles: 25
+
+# ③ 降低远距离 ROAD 的过度避障：ROAD 不再沿用 PATROL 的 80/4.0 保守代价。
+#    注：动态安全半径仍是 max(safe_radius, |v|*0.8)，高速时依然会提前避让。
+road_mppi_obstacle_weight: 28.0      # 障碍接近代价权重（2026-09-24：小幅回调，仍高于原始 25.0）
+road_mppi_safe_radius: 1.5           # 静态安全半径（m，原 2.5；2026-09-18 进一步收紧）
+road_mppi_speed_weight: 0.8          # 速度跟踪权重（原 0.4，抬高以对抗"停在原地"）
+# 终端目标权重：2.0 → 2.5，让 ROAD MPPI rollout 更主动往目标点收敛（应对远距漂移/道路丢失场景）。
+road_mppi_goal_weight: 2.5
+road_mppi_yaw_weight: 0.30           # 偏航惩罚（原 0.05/0.15；2026-09-18 抬高至 0.30 让 MPPI 接受 w≠0 绕路）
+
+# 开阔地带（激光量程内完全没有回波 = 无障碍，不是故障）：
+#   MPPI 距离场为空时会 valid()=false，这里用直飞航向控制继续前进，安全层照常生效。
+open_space_yaw_gain: 1.2             # 航向比例增益
+open_space_max_w: 1.0                # 开阔直飞时最大偏航角速度（rad/s）
+
+# 区域回归（修 4 号 stop=7 死锁：道路先验指向区域外 + 边界保护清零速度）：
+region_return_threshold: 2.0         # 在区域外超过该距离即进入"回归区域"模式（m）
+region_conflict_cycles: 10           # 或边界连续 N 个周期把速度清零也触发（10 @50Hz = 0.2s）
+region_return_speed: 1.5             # 回归区域时的速度上限（m/s）
+
+# 激光短时过期（负载 / sim time 抖动导致的 >sensor_timeout 空档）：
+# 不再立即停车，限速蠕行等待新扫描；超过宽限期或本来就停着仍然立即停车。
+scan_stale_grace_time: 1.0           # 宽限时长（s），0 = 关闭该宽限
+scan_stale_grace_speed: 0.5          # 宽限期间的限速（m/s）
+
+# ④ 接近航点的"垂直路面对准"：当 dist ≤ road_align_distance，MPPI 局部目标被
+#    强制从"沿路 + 沿目标方向"分解为"沿路 + 垂直路"两个分量，垂直分量权重
+#    = road_align_perp_weight。目的：解决 4/5 号在目标附近 5~15m 被路灯/加油站
+#    挡住时，MPPI 不绕、悬停的问题。±20° 由 yaw_weight=0.25 容忍。
+road_align_distance: 12.0
+road_align_perp_weight: 0.7
+
+# ⑤ 视觉失效 1s 后切到"几何目标"模式：4/5 号周围没有连续可识别道路时，
+#    避免被旧 road_heading 拖偏，直接让 MPPI 朝 (70,-20)/(110,20) 几何目标飞行，
+#    障碍规避交给 MPPI 自己的距离场完成。
+road_geom_only_after_lost: 1.0
+
+# ⑥ ROAD 速度诊断（全部 latch，晚订阅也能立刻拿到最后一帧）：
+#   /<vehicle>/area_mission/diag        std_msgs/String，人读（字段名+值一行）
+#   /<vehicle>/area_mission/diag_array  std_msgs/Float32MultiArray，字段顺序如下，便于画曲线
+#   /swarm_diag                         std_msgs/String，六机汇总（每行带 vehicle 前缀）
+#   /<vehicle>/area_mission/params      std_msgs/String，生效参数 + 构建时间快照
+# 说明：诊断由**墙钟定时器**发布，仿真时钟停走/跳变时依然有数据；
+#       同时每 1s 往日志打一行 DIAG，话题抓不到时也能事后 grep。
+# 字段顺序：0 mppi_valid, 1 mppi_v, 2 mppi_w, 3 v_after_mppi, 4 v_after_depth,
+#          5 v_after_ttc, 6 v_after_peer, 7 v_after_region, 8 v_after_floor,
+#          9 v_published, 10 w_published, 11 road_valid, 12 road_held,
+#          13 road_confidence, 14 guidance_norm, 15 fwd_lidar, 16 fwd_depth,
+#          17 dist_to_goal, 18 stop_code, 19 mode(0=TAKEOFF,1=ROAD,2=PATROL),
+#          20 floor_state, 21 recovery, plus hard-stop/recovery diagnostics appended by node.
+# Recovery defaults: pure lateral escape, 1.0m robot radius + 0.5m margin, 4s timeout.
+#
+# ===== P0 v3.1（2026-09-20 300s 实机回归后修订，PATROL 恢复契约）=====
+# 回归暴露的两个机制问题，此处参数就是为它们准备的：
+#   (a) 恢复在 IDLE/ACTIVE/TIMEOUT_HOLD 之间空转：触发 2.8m 与"判 clear"的 1.5m 之间
+#       没有滞回，一进恢复就被判 clear；方向每次重进都重选 -> 侧移正负抵消，
+#       30s 净侧移 < 0.1m。现在：进入 4.0m / 退出 max(5.0, 进入+1.5)m，方向锁定，
+#       且必须"净空打开 + 净侧移 >= min_progress + 承诺 min_commit_time"才算成功。
+#   (b) 位姿异常（stop=3）抢占恢复侧移并永久锁死：last_valid_pose_ 只在无跳变时更新，
+#       一次碰撞位移让 pose_jump 恒真 -> stop=3 一直保持到测试结束（5 台机都这样）。
+#       现在：碰撞类跳变允许恢复侧移继续 pose_abnormal_escape_time；位姿持续稳定
+#       pose_rebaseline_time 后重新基线化，不再永久锁死。
+# 以下均为节点内建默认值，需要覆盖时在本文件取消注释即可（会覆盖代码默认）。
+# patrol_recovery_obstacle_clearance: 4.0   # 进入恢复的前向净空（必须 > laser_stop_max_+robot_radius_）
+# patrol_recovery_exit_clearance: 5.0       # 退出恢复的净空（滞回，防抖）
+# patrol_recovery_cooldown: 1.0             # 一次机动结束后的冷却（s）
+# patrol_recovery_giveup_cooldown: 2.5     # 放弃型退出(no_escape)的更长冷却（s）：
+#   障碍还在前方时 1s 就恢复前向会撞上去；该冷却期同时受"前向限速 40%"约束
+# patrol_recovery_min_commit_time: 0.8      # 至少承诺这么久的侧移才算成功（s）
+# patrol_recovery_max_attempts: 2           # 超时后换边重试的次数上限
+# patrol_recovery_side_speed: 0.4           # 侧移速度（m/s）
+# patrol_recovery_timeout: 4.0              # ACTIVE -> TIMEOUT_HOLD 的超时（s）
+# patrol_speed_envelope_range: 6.0          # PATROL 前向速度包络的作用距离（m）
+# patrol_speed_envelope_min: 0.3            # 包络的下限速度（m/s）
+# P0 PATROL 卡死检测：窗口内净位移不足且安全阻塞过半时黑名单当前航点。
+# patrol_stall_window: 20.0                 # 卡死判定窗口（s）
+# patrol_stall_min_progress: 3.0            # 窗口最小净位移（m）
+# patrol_stall_blocked_ratio: 0.5            # blocked 周期比例阈值
+# patrol_wp_blacklist_time: 90.0             # 航点黑名单时长（s）
+# pose_abnormal_escape_time: 2.0            # 位姿跳变后仍允许恢复侧移的时长（s）
+# pose_rebaseline_time: 1.0                 # 位姿持续稳定多久就重新基线化（s）
+# max_safe_altitude: 30.0                   # 高度合理性上界（m，超过视为异常）
+# ---- S10 双向高度控制 + ALT_RECOVER（修复"巡逻后掉高 -> 永久 stop=3"）----
+# alt_climb_deadband: 0.3                   # 低于目标超过该值就允许正 z 爬升（旧代码此处恒 0）
+# alt_descend_deadband: 0.3                 # 高于目标超过该值才允许下降
+# climb_rate: 0.5                           # 爬升速度上限（m/s）
+# alt_recover_enter_z: 3.5                  # 低于该高度进入 ALT_RECOVER（停前向、原地爬升），对应 target_altitude=4.5
+# alt_recover_exit_z: 4.2                   # 回到该高度以上才退出 ALT_RECOVER、恢复前向
+#   （进入/退出高度会自动按 target_altitude 钳制，避免 target 本身低于退出高度时爬个不停）
+# ---- 2026-09-24 位姿合理性与 ALT_RECOVER 超时（防 EKF 负高度发散）----
+# pose_z_min_valid: -2.0                    # 低于该高度视为位姿不可信（低于地面 2m 不可能是真高度）
+# alt_recover_timeout: 8.0                  # ALT_RECOVER 最长持续时间（s），超时放弃爬升
+#   背景：实测 uav2 多轮出现 z=-128 ~ -1503m 的 EKF 高度发散，且单步只漂 ~0.2m（pose_jump
+#   抓不到）。此时必须"停 + 等估计恢复"：既不能进 ALT_RECOVER（会一直爬到 >6m 被裁判判 0，
+#   期间还屏蔽位姿跳变检测），也不能 rebaseline（等于把坏位姿合法化）。
+#   触发时 diag: stop=3 / abnormal_pose=3 / safety_reason=pose_z_invalid
+# ---- S10 新增 diag 字段（追加在数组末尾，老下标不变）----
+# pose_z / vz_pub / alt_climb / alt_recover：
+#   pose_z=当前高度估计，vz_pub=实际发出的 z 速度指令，alt_climb=1 正在爬升，alt_recover=1 处于 ALT_RECOVER
+# floor_state（速度下限为何生效/未生效，排查"原地旋转"最有用）：
+#   0 无需兜底（速度已高于下限）/ 1 下限已生效 / 2 crawl recovery 中跳过
+#   3 前向净空不足跳过（= 前方真有障碍，安全优先）/ 4 距目标过近跳过
+# 另有 scan_age / scan_age_wall / pose_age / clock_jumps：
+#   scan_age=仿真时间年龄，scan_age_wall=墙钟年龄；只要任一在 sensor_timeout 内即视为新鲜，
+#   clock_jumps>0 表示检测到仿真时钟跳变（>0.3s/控制周期），此时以墙钟为准。
+# stop_code: 0 无 / 1 激光无效 / 2 激光短时过期(限速蠕行) / 3 位姿过期或位姿异常 /
+#            4 MPPI 无效 / 5 深度硬停 / 6 TTC/激光硬停 / 7 区域边界 / 8 暂停 /
+#            9 PATROL 恢复超时保持(TIMEOUT_HOLD，仍保留侧移)
+# P0 v3.1 追加诊断字段（下标 35 起，直接追加不改变老下标）：
+#   v_lat_pub（实际发出的侧向速度）、abnormal_pose（0正常/1低高度/2跳变）、
+#   abnormal_cycles、recovery_attempt、recovery_dir_changes、speed_envelope
+# S1-S3 near-target front inhibit and depth safety defaults.
+# 与 launch inline 默认值保持一致：launch 端 front_inhibit_depth_enter=2.5/release=3.5。
+# launch inline 的值会被本文件覆盖，因此这里直接对齐到 2.5/3.5；depth_cost_cutoff=4.0。
+near_target_guard_margin: 4.0
+front_inhibit_laser_enter: 1.5
+front_inhibit_laser_release: 2.5
+front_inhibit_depth_enter: 2.5
+front_inhibit_depth_release: 3.5
+front_inhibit_release_cycles: 5
+depth_cost_cutoff: 4.0
+depth_obstacle_weight: 40.0
+depth_soft_start: 2.5              # 深度软惩罚下界（m）：[soft_start, cutoff] 用线性小代价，允许通过狭窄区
+depth_soft_weight: 3.0             # 软惩罚在 depth==soft_start 处的最大值（线性递减到 cutoff 处为 0）
+depth_stop_speed_gain: 0.8
+diag_rate: 5.0
+
+# ---- PATROL hover-skip：MPPI × 蛇形航点冲突的快路径（2026-09-22）----
+# 注意：effective_deadline = max(patrol_hover_deadline, 2*patrol_recovery_timeout)，
+# 默认 5 与 4 凑成 8s，不抢占正常恢复（ACTIVE 4s + TIMEOUT_HOLD 4s）。
+# 想加快可同时把 patrol_recovery_timeout 调小，或显式把
+# patrol_hover_deadline 提高到 10~12。
+# 取值来源：smooth_x_（上一周期真正发布的速度），不是 cmd.linear.x
+# （本周期内还是 MPPI 原始输出），也不是 diag_[DIAG_V_PUB]（被 std::fill 清零）。
+# patrol_hover_deadline: 5.0
+# patrol_hover_skip_blacklist: 30.0
+# patrol_hover_v_threshold: 0.2

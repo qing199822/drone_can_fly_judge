@@ -1,0 +1,101 @@
+# MPPI 参数文件（src/auto_explore/config/mppi_params.yaml）
+#
+# 加载方式：`auto_explore_swarm.launch` 在每个 UAV 命名空间下
+#   <rosparam file="$(find auto_explore)/config/mppi_params.yaml" command="load"/>
+# 改完此文件后：
+#   1. 重启仿真（最简单）；或者
+#   2. 在 ROS 运行时：
+#        rosparam load $(rospack find auto_explore)/config/mppi_params.yaml <vehicle>
+#      并对每个 UAV（typhoon_h480_0..5）调用 ~/reload_mppi_params 服务（见 area_mission_node.cpp），
+#      或者直接调用 mppi_.configure() 的 rosparam reload 服务。
+#
+# 与 ROS 参数服务器对应；不在此文件里的字段保留 launch/源码默认。
+
+# ===== 1. 采样预算 =====
+mppi_num_samples: 1500          # K 候选路线数（每周期）
+mppi_update_rate: 20.0         # 滚动重规划频率（Hz）；与控制频率解耦
+mppi_horizon: 16               # H rollout 步数
+mppi_dt: 0.10                  # 每步时长（s）；总前视 H*dt ≈ 1.6 s
+
+# ===== 2. 控制边界 =====
+mppi_v_des: 3.2                # 巡逻巡航目标速度（m/s）
+mppi_max_v: 4.5                # 巡逻最大前向速度（m/s）
+mppi_min_v: 0.0                # 最小前向速度（m/s）；0 允许悬停避障
+mppi_max_w: 1.2                # 最大偏航角速度（rad/s）
+mppi_sigma_v: 0.8              # 线速度采样噪声标准差
+mppi_sigma_w: 0.6              # 角速度采样噪声标准差
+mppi_lambda: 0.10              # MPPI 温度（越小越贪婪）
+
+# ===== 3. 评分项权重 =====
+mppi_goal_weight: 3.0           # 终端目标距离代价
+mppi_obstacle_weight: 100.0     # 障碍接近代价
+mppi_yaw_weight: 0.25          # 偏航率惩罚
+mppi_speed_weight: 3.5         # 速度偏离 v_des 惩罚
+
+# ===== 4. 局部障碍距离场 =====
+mppi_field_radius: 20.0        # 距离场半边长（m）
+mppi_field_res: 0.15           # 距离场分辨率（m/格）
+mppi_safe_radius: 2.0          # 静态安全半径（m）；运行时安全半径 = max(safe_radius, |v|*0.8)
+mppi_robot_radius: 0.35        # 与任务节点 robot_radius 一致；Typhoon H480 实际机体半径约 0.35m
+                                # 真实大小的圆盘而不是质点；撞墙/卡墙更早出现代价上升。
+                                # depth_obstacle_cost 也按 (dd - robot_radius) 重新分段。
+                                # typhoon_h480 桨盘半径约 0.5 m；换机型改此值即可。
+
+# ===== 4b. DWB 风格轨迹 critics（PathAlign + PathDist 主导） =====
+# path_align_weight：rollout 末端切向与期望路径切向的 1-cos 代价；
+#                   主导 → 抑制"为避障绕远却偏离路向"的 rollout。
+# path_dist_weight : rollout 末端到期望路径的有符号横向偏移绝对值代价；
+#                   主导 → 抑制"绕飞后贴不到期望路"的 rollout。
+# 调用方通过 mppi::Planner::setPath(body_path) 注入期望路径（机体坐标系）；
+# 空路径时按直线到 goal 退化（保持与 PATROL/TRANSIT 默认一致）。
+mppi_path_align_weight: 1.0
+mppi_path_dist_weight:  4.5
+
+# ===== 5. 深度相机代价 =====
+depth_cost_cutoff: 4.0         # 深度代价查询半径（m）
+depth_obstacle_weight: 40000.0    # 深度<soft_start 时二次代价权重
+depth_soft_start: 0.05          # 软惩罚下界（m）
+depth_soft_weight: 10.0         # 软惩罚最大值（depth==soft_start 处）
+depth_grid_radius: 8.0         # 深度栅格半边长（m）
+depth_grid_res: 0.25           # 深度栅格分辨率（m/格）
+
+# ===== 6. ROAD 阶段专用 =====
+road_mppi_v_des: 3.5
+road_mppi_max_v: 5.0
+road_mppi_min_v: 0.0
+road_mppi_depth_cost_cutoff: 4.0
+road_mppi_depth_obstacle_weight: 20.0
+road_mppi_depth_soft_start: 2.5
+road_mppi_depth_soft_weight: 3.0
+
+# ===== 7. 安全层：latch 阈值 =====
+front_inhibit_laser_enter: 1.5
+front_inhibit_laser_release: 2.5
+front_inhibit_depth_enter: 2.5
+front_inhibit_depth_release: 3.5
+depth_stop_threshold: 1.2
+depth_stop_speed_gain: 0.8
+depth_obstacle_threshold: 3.0     # 后级深度兜底阈值（m），不参与 MPPI 深度代价
+
+# 2026-09-27：深度硬停总开关。true=启用 publishImmediateStop(0)（默认），
+# false=深度硬停永远为 0，不再因深度图近距（前向 < depth_stop_dist）紧急停车，
+# 但 front_inhibit / laser_hard_stop / ttc_hard_stop 仍生效（不会撞墙）。
+enable_depth_hard_stop: false
+
+# ===== 8. 深度相机内参/外参（realsense 320×240 标定） =====
+depth_fx: 205.4696
+depth_fy: 205.4696
+depth_cx: 320.0
+depth_cy: 240.0
+depth_extrinsic_x: 0.0
+depth_extrinsic_y: 0.0
+depth_extrinsic_z: -0.162
+depth_extrinsic_pitch: 0.5236
+
+# MPPI 深度代价总开关：true=启用 setDepthPoints；默认 false（深度投影需对拍）
+mppi_depth_enabled: false
+
+# ===== 9. ROAD 接近段权重（road-follow / area_mission 共用） =====
+road_speed_limit: 3.0               # ROAD 段巡航速度上限（m/s）
+road_approach_target_weight: 0.7     # 接近段目标点方向权重（vs 道路 prior）
+road_approach_prior_weight: 0.3      # 接近段道路先验权重

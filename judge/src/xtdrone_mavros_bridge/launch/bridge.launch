@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="num_drones" default="1"/>
+  <arg name="vehicle_type" default="typhoon_h480"/>
+  <arg name="drone_id" default="0"/>
+
+  <group if="$(eval drone_id &lt; num_drones)">
+    <node pkg="xtdrone_mavros_bridge"
+          type="xtdrone_mavros_bridge.py"
+          name="xtdrone_mavros_bridge_$(arg vehicle_type)_$(arg drone_id)"
+          output="screen"
+          respawn="true">
+      <param name="vehicle" value="$(arg vehicle_type)_$(arg drone_id)"/>
+      <param name="setpoint_rate" value="30.0"/>
+      <param name="velocity_timeout" value="0.5"/>
+    </node>
+
+    <include file="$(find xtdrone_mavros_bridge)/launch/bridge.launch">
+      <arg name="num_drones" value="$(arg num_drones)"/>
+      <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+      <arg name="drone_id" value="$(eval drone_id + 1)"/>
+    </include>
+  </group>
+</launch>

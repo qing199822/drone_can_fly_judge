@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>pose_init</name>
+  <version>0.1.0</version>
+  <description>
+    The pose_init package transforms and forwards pose information for multiple drones. 
+    It subscribes to local pose topics, adds a fixed offset, and republishes them as global poses.
+  </description>
+  <maintainer email="your.email@example.com">Your Name</maintainer>
+
+  <license>Apache-2.0</license>
+  <author email="your.email@example.com">Your Name</author>
+
+  <!-- 构建工具依赖 -->
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>roscpp</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+
+  <!-- 导出构建依赖，通常与 build_depend 相同 -->
+  <build_export_depend>roscpp</build_export_depend>
+  <build_export_depend>geometry_msgs</build_export_depend>
+  <build_export_depend>nav_msgs</build_export_depend>
+
+  <!-- 运行时依赖 -->
+  <!-- 这些是在运行节点时需要的包 -->
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+
+  <test_depend>rospy</test_depend>
+  <test_depend>rostest</test_depend>
+
+</package>

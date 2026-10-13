@@ -1,0 +1,667 @@
+diff --git a/ROMFS/px4fmu_common/init.d-posix/airframes/6011_typhoon_h480.post b/ROMFS/px4fmu_common/init.d-posix/airframes/6011_typhoon_h480.post
+index 0af0143..4934055 100644
+--- a/ROMFS/px4fmu_common/init.d-posix/airframes/6011_typhoon_h480.post
++++ b/ROMFS/px4fmu_common/init.d-posix/airframes/6011_typhoon_h480.post
+@@ -1,10 +1,10 @@
+ 
+ mixer append /dev/pwm_output0 etc/mixers/mount_legs.aux.mix
+ 
+-mavlink start -x -u 14558 -r 4000 -f -m onboard -o 14530 -p
++mavlink start -x -u $((34580+px4_instance)) -r 4000 -f -m onboard -o $((24540+px4_instance)) -p
+ 
+ # shellcheck disable=SC2154
+-mavlink stream -r 10 -s MOUNT_ORIENTATION -u $udp_gcs_port_local
++mavlink stream -r 10 -s MOUNT_ORIENTATION -u $((18570+px4_instance))
+ # shellcheck disable=SC2154
+-mavlink stream -r 50 -s ATTITUDE_QUATERNION -u $udp_offboard_port_local
+-mavlink stream -r 10 -s MOUNT_ORIENTATION -u $udp_offboard_port_local
++mavlink stream -r 50 -s ATTITUDE_QUATERNION -u $((34580+px4_instance))
++mavlink stream -r 10 -s MOUNT_ORIENTATION -u $((34580+px4_instance))
+diff --git a/ROMFS/px4fmu_common/init.d-posix/px4-rc.mavlink b/ROMFS/px4fmu_common/init.d-posix/px4-rc.mavlink
+index 88aa1fe..aa2a0f8 100644
+--- a/ROMFS/px4fmu_common/init.d-posix/px4-rc.mavlink
++++ b/ROMFS/px4fmu_common/init.d-posix/px4-rc.mavlink
+@@ -1,8 +1,8 @@
+ #!/bin/sh
+ # shellcheck disable=SC2154
+ 
+-udp_offboard_port_local=$((14580+px4_instance))
+-udp_offboard_port_remote=$((14540+px4_instance))
++udp_offboard_port_local=$((34580+px4_instance))
++udp_offboard_port_remote=$((24540+px4_instance))
+ [ $px4_instance -gt 9 ] && udp_offboard_port_remote=14549 # use the same ports for more than 10 instances to avoid port overlaps
+ udp_onboard_payload_port_local=$((14280+px4_instance))
+ udp_onboard_payload_port_remote=$((14030+px4_instance))
+diff --git a/ROMFS/px4fmu_common/init.d-posix/rcS b/ROMFS/px4fmu_common/init.d-posix/rcS
+index 206d265..39ca326 100644
+--- a/ROMFS/px4fmu_common/init.d-posix/rcS
++++ b/ROMFS/px4fmu_common/init.d-posix/rcS
+@@ -1,14 +1,11 @@
+ #!/bin/sh
+ 
+-set -e
+-
+ # PX4 commands need the 'px4-' prefix in bash.
+ # (px4-alias.sh is expected to be in the PATH)
+ # shellcheck disable=SC1091
+ . px4-alias.sh
+ 
+-#search path for sourcing px4-rc.*
+-PATH="$PATH:${R}etc/init.d-posix"
++SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+ 
+ #
+ # Main SITL startup script
+@@ -18,23 +15,24 @@ PATH="$PATH:${R}etc/init.d-posix"
+ # shellcheck disable=SC2154
+ if [ "$replay_mode" = "ekf2" ]
+ then
+-	. ${R}etc/init.d-posix/rc.replay
++	sh etc/init.d-posix/rc.replay
+ 	exit 0
+ fi
+ 
+ # initialize script variables
++set AUX_MODE                    none
+ set IO_PRESENT                  no
++set LOG_FILE                    bootlog.txt
++set MAV_TYPE                    none
+ set MIXER                       none
+ set MIXER_AUX                   none
+ set MIXER_FILE                  none
+ set OUTPUT_MODE                 sim
+-set EXTRA_MIXER_MODE            none
+ set PWM_OUT                     none
+ set SDCARD_MIXERS_PATH          etc/mixers
+ set USE_IO                      no
+ set VEHICLE_TYPE                none
+-set LOGGER_ARGS                 ""
+-set LOGGER_BUF                  1000
++set LOGGER_BUF			1000
+ 
+ set RUN_MINIMAL_SHELL           no
+ 
+@@ -45,15 +43,19 @@ else
+ 	# Find the matching Autostart ID (file name has the form: [0-9]+_${PX4_SIM_MODEL})
+ 	# TODO: unify with rc.autostart generation
+ 	# shellcheck disable=SC2012
+-	REQUESTED_AUTOSTART=$(ls "${R}etc/init.d-posix/airframes" | sed -n 's/^\([0-9][0-9]*\)_'${PX4_SIM_MODEL}'$/\1/p')
++	REQUESTED_AUTOSTART=$(ls "$SCRIPT_DIR" | sed -n 's/^\([0-9][0-9]*\)_'${PX4_SIM_MODEL}'$/\1/p')
+ 	if [ -z "$REQUESTED_AUTOSTART" ]; then
+-		echo "ERROR  [init] Unknown model $PX4_SIM_MODEL (not found by name on ${R}etc/init.d-posix/airframes)"
++		echo "Error: Unknown model '$PX4_SIM_MODEL'"
+ 		exit 1
+-	else
+-		echo "INFO  [init] found model autostart file as SYS_AUTOSTART=$REQUESTED_AUTOSTART"
+ 	fi
+ fi
+ 
++# clear bootlog
++[ -f $LOG_FILE ] && rm $LOG_FILE
++
++
++uorb start
++
+ # Load parameters
+ set PARAM_FILE eeprom/parameters_"$REQUESTED_AUTOSTART"
+ param select $PARAM_FILE
+@@ -98,65 +100,120 @@ then
+ 	set AUTOCNF yes
+ 
+ 	# Wipe out params except RC*, flight modes, total flight time, accel cal, gyro cal, next flight UUID
+-	param reset_all SYS_AUTO* RC* COM_FLTMODE* LND_FLIGHT* TC_* CAL_ACC* CAL_GYRO* COM_FLIGHT*
++	param reset_nostart RC* COM_FLTMODE* LND_FLIGHT_T_* TC_* COM_FLIGHT_UUID
+ fi
+ 
+ # multi-instance setup
+ # shellcheck disable=SC2154
+ param set MAV_SYS_ID $((px4_instance+1))
++simulator_tcp_port=$((4560+px4_instance))
++udp_offboard_port_local=$((34580+px4_instance))
++udp_offboard_port_remote=$((24540+px4_instance))
++# [ $px4_instance -gt 9 ] && udp_offboard_port_remote=14549 # use the same ports for more than 10 instances to avoid port overlaps
++udp_onboard_payload_port_local=$((14280+px4_instance))
++udp_onboard_payload_port_remote=$((14030+px4_instance))
++udp_gcs_port_local=$((18570+px4_instance))
+ 
+ if [ $AUTOCNF = yes ]
+ then
+ 	param set SYS_AUTOSTART $REQUESTED_AUTOSTART
+ 
+-	param set CAL_ACC0_ID  1310988 # 1310988: DRV_IMU_DEVTYPE_SIM, BUS: 1, ADDR: 1, TYPE: SIMULATION
+-	param set CAL_GYRO0_ID 1310988 # 1310988: DRV_IMU_DEVTYPE_SIM, BUS: 1, ADDR: 1, TYPE: SIMULATION
+-	param set CAL_ACC1_ID  1310996 # 1310996: DRV_IMU_DEVTYPE_SIM, BUS: 2, ADDR: 1, TYPE: SIMULATION
+-	param set CAL_GYRO1_ID 1310996 # 1310996: DRV_IMU_DEVTYPE_SIM, BUS: 2, ADDR: 1, TYPE: SIMULATION
+-	param set CAL_ACC2_ID  1311004 # 1311004: DRV_IMU_DEVTYPE_SIM, BUS: 3, ADDR: 1, TYPE: SIMULATION
+-	param set CAL_GYRO2_ID 1311004 # 1311004: DRV_IMU_DEVTYPE_SIM, BUS: 3, ADDR: 1, TYPE: SIMULATION
++	param set BAT_N_CELLS 3
++
++	param set CAL_ACC0_ID  1310988 # 1.13.2: DRV_IMU_DEVTYPE_SIM, BUS1
++
++	param set CAL_GYRO0_ID 1310988 # 1.13.2: DRV_IMU_DEVTYPE_SIM, BUS1
++	param set CAL_ACC1_ID  1310996 # BUS2
++	param set CAL_GYRO1_ID 1310996 # BUS2
++	param set CAL_ACC2_ID  1311004 # BUS3
++	param set CAL_GYRO2_ID 1311004 # BUS3
+ 
+ 	param set CAL_MAG0_ID 197388
+-	param set CAL_MAG1_ID 197644
+ 
++	param set CBRK_AIRSPD_CHK 0
++	param set CBRK_SUPPLY_CHK 894281
++
++	param set COM_DISARM_LAND 0.5
++	param set COM_OBL_ACT 2
++	param set COM_OBL_RC_ACT 0
++	param set COM_RC_IN_MODE 1
++
++	# GPS used
++	param set EKF2_AID_MASK 1
++	# Vision used and GPS denied
++	#param set EKF2_AID_MASK 24
++
++	# Barometer used for hight measurement
++	param set EKF2_HGT_MODE 0
++	# Barometer denied and vision used for hight measurement
++	#param set EKF2_HGT_MODE 3
++
++	param set EKF2_ANGERR_INIT 0.01
++	param set EKF2_GBIAS_INIT 0.01
++
++	# Prevent high accel bias
++
++	# Speedup SITL startup
++	param set EKF2_REQ_GPS_H 0.5
++	# zzu_fly: 仿真 GPS 的 eph/epv=0（无精度），默认 GPS 检查会拒收 → 关闭检查以便 EKF 融合
++	param set EKF2_GPS_CHECK 0
++	# zzu_fly: 解锁后需要时间建立 offboard 流，默认 10s 自动上锁会导致 RTL
++	param set COM_DISARM_PRFLT 30
++	# zzu_fly: 纯 offboard 无 RC 场景 —— 关掉"无手动输入"与"数据链丢失"两路 failsafe，
++	# 否则解锁后立刻 failsafe，OFFBOARD 切换被拒（实测 mode_sent=True 但模式不变）
++	param set NAV_RCL_ACT 0      # RC 丢失动作=disabled
++	param set NAV_DLL_ACT 0      # 数据链丢失动作=disabled
++	param set COM_RC_IN_MODE 1   # 不检查 RC 输入
++	param set COM_RC_LOSS_T 0    # RC 丢失超时=0（禁用）
++	param set COM_RC_IN_MODE 1   # 无 RC 也能解锁（xtdrone 用 MAVROS 接管）
++
++	# LPE: GPS only mode
++	param set LPE_FUSION 145
++
++	# Simulator IMU data provided at 250 Hz
++	param set IMU_INTEG_RATE 250
++
++	param set MC_PITCH_P 6
++	param set MC_PITCHRATE_P 0.2
++	param set MC_ROLL_P 6
++	param set MC_ROLLRATE_P 0.2
++
++	param set MPC_ALT_MODE 0
++	param set MPC_HOLD_MAX_Z 2
++	param set MPC_Z_VEL_I_ACC 0.15
++	param set MPC_Z_VEL_P_ACC 0.6
++	param set MPC_XY_P 0.8
++	param set MPC_XY_VEL_P_ACC 0.2
++	param set MPC_XY_VEL_I_ACC 0.02
++	param set MPC_XY_VEL_D_ACC 0.016
++
++	param set MPC_SPOOLUP_TIME 0.5
++	param set MPC_TKO_RAMP_T 1
++
++	param set NAV_ACC_RAD 2
++	param set NAV_DLL_ACT 2
++
++	param set RTL_DESCEND_ALT 5
++	param set RTL_LAND_DELAY 5
++	param set RTL_RETURN_ALT 30
++
++	# By default log from boot until first disarm.
++	param set SDLOG_MODE 1
++	# enable default, estimator replay and vision/avoidance logging profiles
++	param set SDLOG_PROFILE 131
++	param set SDLOG_DIRS_MAX 7
++	param set SENS_BOARD_ROT 0
+ 	param set SENS_BOARD_X_OFF 0.000001
+ 	param set SENS_DPRES_OFF 0.001
+-fi
+-
+-param set-default BAT1_N_CELLS 4
+-
+-param set-default CBRK_AIRSPD_CHK 0
+-param set-default CBRK_SUPPLY_CHK 894281
+-
+-# disable check, no CPU load reported on posix yet
+-param set-default COM_CPU_MAX -1
+-
+-# Don't require RC calibration and configuration
+-param set-default COM_RC_IN_MODE 1
++	param set SYS_RESTART_TYPE 2
+ 
+-# Speedup SITL startup
+-param set-default EKF2_REQ_GPS_H 0.5
+-
+-# Multi-EKF
+-param set-default EKF2_MULTI_IMU 3
+-param set-default SENS_IMU_MODE 0
+-param set-default EKF2_MULTI_MAG 2
+-param set-default SENS_MAG_MODE 0
+-
+-param set-default IMU_GYRO_FFT_EN 1
+-
+-param set-default -s MC_AT_EN 1
+-
+-# By default log from boot until first disarm.
+-param set-default SDLOG_MODE 1
+-# enable default, estimator replay and vision/avoidance logging profiles
+-param set-default SDLOG_PROFILE 131
+-param set-default SDLOG_DIRS_MAX 7
++	param set TRIG_INTERFACE 3
++fi
+ 
+-param set-default TRIG_INTERFACE 3
++param set COM_CPU_MAX -1 # disable check, no CPU load reported on posix yet
+ 
+ # Adapt timeout parameters if simulation runs faster or slower than realtime.
+-if [ -n "$PX4_SIM_SPEED_FACTOR" ]; then
++if [ ! -z $PX4_SIM_SPEED_FACTOR ]; then
+ 	COM_DL_LOSS_T_LONGER=$(echo "$PX4_SIM_SPEED_FACTOR * 10" | bc)
+ 	echo "COM_DL_LOSS_T set to $COM_DL_LOSS_T_LONGER"
+ 	param set COM_DL_LOSS_T $COM_DL_LOSS_T_LONGER
+@@ -168,16 +225,11 @@ if [ -n "$PX4_SIM_SPEED_FACTOR" ]; then
+ 	COM_OF_LOSS_T_LONGER=$(echo "$PX4_SIM_SPEED_FACTOR * 0.5" | bc)
+ 	echo "COM_OF_LOSS_T set to $COM_OF_LOSS_T_LONGER"
+ 	param set COM_OF_LOSS_T $COM_OF_LOSS_T_LONGER
+-
+-	COM_OBC_LOSS_T_LONGER=$(echo "$PX4_SIM_SPEED_FACTOR * 5.0" | bc)
+-	echo "COM_OBC_LOSS_T set to $COM_OBC_LOSS_T_LONGER"
+-	param set COM_OBC_LOSS_T $COM_OBC_LOSS_T_LONGER
+ fi
+ 
+ # Autostart ID
+ autostart_file=''
+-# shellcheck disable=SC2231
+-for f in ${R}etc/init.d-posix/airframes/"$(param show -q SYS_AUTOSTART)"_*
++for f in etc/init.d-posix/"$(param show -q SYS_AUTOSTART)"_*
+ do
+ 	filename=$(basename "$f")
+ 	case "$filename" in
+@@ -204,43 +256,19 @@ then
+ 	param set SYS_AUTOCONFIG 0
+ fi
+ 
+-# Simulator IMU data provided at 250 Hz
+-param set IMU_INTEG_RATE 250
+-
+-#user defined params for instances can be in PATH
+-. px4-rc.params
+-
+ dataman start
+-# only start the simulator if not in replay mode, as both control the lockstep time
+-if ! replay tryapplyparams
+-then
+-  . px4-rc.simulator
+-fi
+-load_mon start
+-battery_simulator start
++replay tryapplyparams
++simulator start -c $simulator_tcp_port
+ tone_alarm start
+ rc_update start
+-manual_control start
+ sensors start
+ commander start
+-
+-# Configure vehicle type specific parameters.
+-# Note: rc.vehicle_setup is the entry point for rc.interface,
+-#       rc.fw_apps, rc.mc_apps, rc.rover_apps, and rc.vtol_apps.
+-#
+-. ${R}etc/init.d/rc.vehicle_setup
+-
+ navigator start
+ 
+-# Try to start the micrortps_client with UDP transport if module exists
+-if px4-micrortps_client status > /dev/null 2>&1
+-then
+-	. px4-rc.rtps
+-fi
+ 
+-if param greater -s MNT_MODE_IN -1
++if ! param compare -s MNT_MODE_IN -1
+ then
+-	gimbal start
++	vmount start
+ fi
+ 
+ if param greater -s TRIG_MODE 0
+@@ -249,30 +277,57 @@ then
+ 	camera_feedback start
+ fi
+ 
+-if param compare -s IMU_GYRO_FFT_EN 1
+-then
+-	gyro_fft start
+-fi
+-
+-if param compare -s IMU_GYRO_CAL_EN 1
+-then
+-	gyro_calibration start
+-fi
++# Configure vehicle type specific parameters.
++# Note: rc.vehicle_setup is the entry point for rc.interface,
++#       rc.fw_apps, rc.mc_apps, rc.rover_apps, and rc.vtol_apps.
++#
++. ${R}etc/init.d/rc.vehicle_setup
+ 
+-#user defined mavlink streams for instances can be in PATH
+-. px4-rc.mavlink
++# GCS link
++mavlink start -x -u $udp_gcs_port_local -r 4000000
++mavlink stream -r 50 -s POSITION_TARGET_LOCAL_NED -u $udp_offboard_port_local
++mavlink stream -r 50 -s LOCAL_POSITION_NED -u $udp_offboard_port_local
++mavlink stream -r 2 -s ESTIMATOR_STATUS -u $udp_offboard_port_local
++mavlink stream -r 2 -s STATUSTEXT -u $udp_offboard_port_local
++mavlink stream -r 5 -s SYS_STATUS -u $udp_offboard_port_local
++mavlink stream -r 10 -s ODOMETRY -u $udp_offboard_port_local
++mavlink stream -r 50 -s GLOBAL_POSITION_INT -u $udp_offboard_port_local
++mavlink stream -r 50 -s ATTITUDE -u $udp_offboard_port_local
++mavlink stream -r 50 -s ATTITUDE_QUATERNION -u $udp_offboard_port_local
++mavlink stream -r 50 -s ATTITUDE_TARGET -u $udp_offboard_port_local
++mavlink stream -r 50 -s SERVO_OUTPUT_RAW_0 -u $udp_offboard_port_local
++mavlink stream -r 20 -s RC_CHANNELS -u $udp_offboard_port_local
++mavlink stream -r 10 -s OPTICAL_FLOW_RAD -u $udp_offboard_port_local
++
++# API/Offboard link
++mavlink start -x -u $udp_offboard_port_local -r 4000000 -f -m onboard -o $udp_offboard_port_remote   # zzu_fly: -f=接受外部 setpoint（否则 OFFBOARD 永远不可用）
++# --- 由 zzu_fly 追加：把 stream 放在 offboard 实例启动之后（否则报 not running）---
++mavlink stream -r 50 -s POSITION_TARGET_LOCAL_NED -u $udp_offboard_port_local
++mavlink stream -r 50 -s LOCAL_POSITION_NED -u $udp_offboard_port_local
++mavlink stream -r 50 -s GLOBAL_POSITION_INT -u $udp_offboard_port_local
++mavlink stream -r 50 -s ATTITUDE -u $udp_offboard_port_local
++mavlink stream -r 50 -s ATTITUDE_QUATERNION -u $udp_offboard_port_local
++mavlink stream -r 50 -s ATTITUDE_TARGET -u $udp_offboard_port_local
++mavlink stream -r 50 -s SERVO_OUTPUT_RAW_0 -u $udp_offboard_port_local
++mavlink stream -r 20 -s RC_CHANNELS -u $udp_offboard_port_local
++mavlink stream -r 10 -s OPTICAL_FLOW_RAD -u $udp_offboard_port_local
++
++# Onboard link to camera
++mavlink start -x -u $udp_onboard_payload_port_local -r 4000 -f -m onboard -o $udp_onboard_payload_port_remote
+ 
+ # execute autostart post script if any
+ [ -e "$autostart_file".post ] && . "$autostart_file".post
+ 
+ # Run script to start logging
+-if param compare SYS_MC_EST_GROUP 2
+-then
+-	set LOGGER_ARGS "-p ekf2_timestamps"
+-else
+-	set LOGGER_ARGS "-p vehicle_attitude"
+-fi
+ . ${R}etc/init.d/rc.logging
+ 
+ mavlink boot_complete
+ replay trystart
++
++# zzu_fly-rc-failsafe: 纯 offboard 场景（无 RC、无地面站）。
++# 必须放在文件末尾：上面的 XTDrone 段会重设 NAV_DLL_ACT / COM_RC_LOSS_T。
++# 不关掉这两路 failsafe，解锁后立刻进入 failsafe，OFFBOARD 切换被拒（实测 mode_sent=True 但模式不变）。
++param set NAV_RCL_ACT 0      # RC 丢失 → disabled
++param set NAV_DLL_ACT 0      # 数据链丢失 → disabled
++param set COM_RC_LOSS_T 0    # RC 丢失超时 → 禁用
++param set COM_RC_IN_MODE 4   # 4=Stick input disabled（否则 manual 使能 ⇒ high throttle 拒解锁）   # 不检查 RC 输入
+diff --git a/Tools/sitl_gazebo b/Tools/sitl_gazebo
+--- a/Tools/sitl_gazebo
++++ b/Tools/sitl_gazebo
+@@ -1 +1 @@
+-Subproject commit 48440d7b5c78a21182415266334981f1163f4b2c
++Subproject commit 48440d7b5c78a21182415266334981f1163f4b2c-dirty
+diff --git a/launch/mavros_posix_sitl.launch b/launch/mavros_posix_sitl.launch
+index 31b93fa..6b68f6a 100644
+--- a/launch/mavros_posix_sitl.launch
++++ b/launch/mavros_posix_sitl.launch
+@@ -22,7 +22,7 @@
+     <arg name="paused" default="false"/>
+     <arg name="respawn_gazebo" default="false"/>
+     <!-- MAVROS configs -->
+-    <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
++    <arg name="fcu_url" default="udp://:24540@localhost:34580"/>
+     <arg name="respawn_mavros" default="false"/>
+     <!-- PX4 configs -->
+     <arg name="interactive" default="true"/>
+diff --git a/launch/multi_uav_mavros_sitl.launch b/launch/multi_uav_mavros_sitl.launch
+index c699d72..62dc2c0 100644
+--- a/launch/multi_uav_mavros_sitl.launch
++++ b/launch/multi_uav_mavros_sitl.launch
+@@ -23,7 +23,7 @@
+     <group ns="uav0">
+         <!-- MAVROS and vehicle configs -->
+         <arg name="ID" value="0"/>
+-        <arg name="fcu_url" default="udp://:14540@localhost:14580"/>
++        <arg name="fcu_url" default="udp://:24540@localhost:34580"/>
+         <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+             <arg name="x" value="0"/>
+@@ -33,12 +33,9 @@
+             <arg name="P" value="0"/>
+             <arg name="Y" value="0"/>
+             <arg name="vehicle" value="$(arg vehicle)"/>
+-            <arg name="mavlink_udp_port" value="14560"/>
++            <arg name="mavlink_udp_port" value="18570"/>
+             <arg name="mavlink_tcp_port" value="4560"/>
+             <arg name="ID" value="$(arg ID)"/>
+-            <arg name="gst_udp_port" value="$(eval 5600 + arg('ID'))"/>
+-            <arg name="video_uri" value="$(eval 5600 + arg('ID'))"/>
+-            <arg name="mavlink_cam_udp_port" value="$(eval 14530 + arg('ID'))"/>
+         </include>
+         <!-- MAVROS -->
+         <include file="$(find mavros)/launch/px4.launch">
+@@ -52,7 +49,7 @@
+     <group ns="uav1">
+         <!-- MAVROS and vehicle configs -->
+         <arg name="ID" value="1"/>
+-        <arg name="fcu_url" default="udp://:14541@localhost:14581"/>
++        <arg name="fcu_url" default="udp://:24541@localhost:34581"/>
+         <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+             <arg name="x" value="1"/>
+@@ -62,12 +59,9 @@
+             <arg name="P" value="0"/>
+             <arg name="Y" value="0"/>
+             <arg name="vehicle" value="$(arg vehicle)"/>
+-            <arg name="mavlink_udp_port" value="14561"/>
++            <arg name="mavlink_udp_port" value="18571"/>
+             <arg name="mavlink_tcp_port" value="4561"/>
+             <arg name="ID" value="$(arg ID)"/>
+-            <arg name="gst_udp_port" value="$(eval 5600 + arg('ID'))"/>
+-            <arg name="video_uri" value="$(eval 5600 + arg('ID'))"/>
+-            <arg name="mavlink_cam_udp_port" value="$(eval 14530 + arg('ID'))"/>
+         </include>
+         <!-- MAVROS -->
+         <include file="$(find mavros)/launch/px4.launch">
+@@ -81,7 +75,7 @@
+     <group ns="uav2">
+         <!-- MAVROS and vehicle configs -->
+         <arg name="ID" value="2"/>
+-        <arg name="fcu_url" default="udp://:14542@localhost:14582"/>
++        <arg name="fcu_url" default="udp://:24542@localhost:34582"/>
+         <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+             <arg name="x" value="0"/>
+@@ -91,12 +85,9 @@
+             <arg name="P" value="0"/>
+             <arg name="Y" value="0"/>
+             <arg name="vehicle" value="$(arg vehicle)"/>
+-            <arg name="mavlink_udp_port" value="14562"/>
++            <arg name="mavlink_udp_port" value="18572"/>
+             <arg name="mavlink_tcp_port" value="4562"/>
+             <arg name="ID" value="$(arg ID)"/>
+-            <arg name="gst_udp_port" value="$(eval 5600 + arg('ID'))"/>
+-            <arg name="video_uri" value="$(eval 5600 + arg('ID'))"/>
+-            <arg name="mavlink_cam_udp_port" value="$(eval 14530 + arg('ID'))"/>
+         </include>
+         <!-- MAVROS -->
+         <include file="$(find mavros)/launch/px4.launch">
+diff --git a/launch/multi_uav_mavros_sitl_sdf.launch b/launch/multi_uav_mavros_sitl_sdf.launch
+index 13b0534..c728752 100644
+--- a/launch/multi_uav_mavros_sitl_sdf.launch
++++ b/launch/multi_uav_mavros_sitl_sdf.launch
+@@ -23,7 +23,7 @@
+     <group ns="uav0">
+         <!-- MAVROS and vehicle configs -->
+         <arg name="ID" value="0"/>
+-        <arg name="fcu_url" default="udp://:14540@localhost:14580"/>
++        <arg name="fcu_url" default="udp://:24540@localhost:34580"/>
+         <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn_sdf.launch">
+             <arg name="x" value="0"/>
+@@ -33,7 +33,7 @@
+             <arg name="P" value="0"/>
+             <arg name="Y" value="0"/>
+             <arg name="vehicle" value="$(arg vehicle)"/>
+-            <arg name="mavlink_udp_port" value="14560"/>
++            <arg name="mavlink_udp_port" value="18570"/>
+             <arg name="mavlink_tcp_port" value="4560"/>
+             <arg name="ID" value="$(arg ID)"/>
+         </include>
+@@ -49,7 +49,7 @@
+     <group ns="uav1">
+         <!-- MAVROS and vehicle configs -->
+         <arg name="ID" value="1"/>
+-        <arg name="fcu_url" default="udp://:14541@localhost:14581"/>
++        <arg name="fcu_url" default="udp://:24541@localhost:34581"/>
+         <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn_sdf.launch">
+             <arg name="x" value="1"/>
+@@ -59,7 +59,7 @@
+             <arg name="P" value="0"/>
+             <arg name="Y" value="0"/>
+             <arg name="vehicle" value="$(arg vehicle)"/>
+-            <arg name="mavlink_udp_port" value="14561"/>
++            <arg name="mavlink_udp_port" value="18571"/>
+             <arg name="mavlink_tcp_port" value="4561"/>
+             <arg name="ID" value="$(arg ID)"/>
+         </include>
+@@ -75,7 +75,7 @@
+     <group ns="uav2">
+         <!-- MAVROS and vehicle configs -->
+         <arg name="ID" value="2"/>
+-        <arg name="fcu_url" default="udp://:14542@localhost:14582"/>
++        <arg name="fcu_url" default="udp://:24542@localhost:34582"/>
+         <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn_sdf.launch">
+             <arg name="x" value="0"/>
+@@ -85,7 +85,7 @@
+             <arg name="P" value="0"/>
+             <arg name="Y" value="0"/>
+             <arg name="vehicle" value="$(arg vehicle)"/>
+-            <arg name="mavlink_udp_port" value="14562"/>
++            <arg name="mavlink_udp_port" value="18572"/>
+             <arg name="mavlink_tcp_port" value="4562"/>
+             <arg name="ID" value="$(arg ID)"/>
+         </include>
+diff --git a/launch/posix_sitl.launch b/launch/posix_sitl.launch
+index d7df048..8311753 100644
+--- a/launch/posix_sitl.launch
++++ b/launch/posix_sitl.launch
+@@ -29,7 +29,7 @@
+     <arg unless="$(arg interactive)" name="px4_command_arg1" value="-d"/>
+     <arg     if="$(arg interactive)" name="px4_command_arg1" value=""/>
+     <node name="sitl" pkg="px4" type="px4" output="screen"
+-        args="$(find px4)/build/px4_sitl_default/etc -s etc/init.d-posix/rcS $(arg px4_command_arg1)" required="true"/>
++        args="$(find px4)/ROMFS/px4fmu_common -s etc/init.d-posix/rcS $(arg px4_command_arg1)" required="true"/>
+ 
+     <!-- Gazebo sim -->
+     <include file="$(find gazebo_ros)/launch/empty_world.launch">
+@@ -41,5 +41,5 @@
+         <arg name="respawn_gazebo" value="$(arg respawn_gazebo)"/>
+     </include>
+     <!-- gazebo model -->
+-    <node name="$(anon vehicle_spawn)" pkg="gazebo_ros" type="spawn_model" output="screen" args="-sdf -file $(arg sdf) -model $(arg vehicle) -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg R) -P $(arg P) -Y $(arg Y)"/>
++    <node name="$(anon vehicle_spawn)" pkg="gazebo_ros" type="spawn_model" output="screen" args="-sdf -file $(arg sdf) -model $(arg vehicle)_0 -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg R) -P $(arg P) -Y $(arg Y)"/>
+ </launch>
+diff --git a/launch/single_vehicle_spawn_sdf.launch b/launch/single_vehicle_spawn_sdf.launch
+index f768f0d..b55eef2 100644
+--- a/launch/single_vehicle_spawn_sdf.launch
++++ b/launch/single_vehicle_spawn_sdf.launch
+@@ -25,7 +25,7 @@
+     <!-- PX4 SITL -->
+     <arg unless="$(arg interactive)" name="px4_command_arg1" value=""/>
+     <arg     if="$(arg interactive)" name="px4_command_arg1" value="-d"/>
+-    <node name="sitl_$(arg ID)" pkg="px4" type="px4" output="screen" args="$(find px4)/build/px4_sitl_default/etc -s etc/init.d-posix/rcS -i $(arg ID) -w sitl_$(arg vehicle)_$(arg ID) $(arg px4_command_arg1)">
++    <node name="sitl_$(arg ID)" pkg="px4" type="px4" output="screen" args="$(find px4)/ROMFS/px4fmu_common -s etc/init.d-posix/rcS -i $(arg ID) -w sitl_$(arg vehicle)_$(arg ID) $(arg px4_command_arg1)">
+     </node>
+     <!-- spawn vehicle -->
+     <node name="$(arg vehicle)_$(arg ID)_spawn" output="screen" pkg="gazebo_ros" type="spawn_model" args="-sdf -param model_description -model $(arg vehicle)_$(arg ID) -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg R) -P $(arg P) -Y $(arg Y)"/>
+diff --git a/src/lib/crypto/monocypher b/src/lib/crypto/monocypher
+--- a/src/lib/crypto/monocypher
++++ b/src/lib/crypto/monocypher
+@@ -1 +1 @@
+-Subproject commit baca5d31259c598540e4d1284bc8d8f793abf83a
++Subproject commit baca5d31259c598540e4d1284bc8d8f793abf83a-dirty
+diff --git a/src/modules/commander/Commander.cpp b/src/modules/commander/Commander.cpp
+index 4729a19..63c4dc3 100644
+--- a/src/modules/commander/Commander.cpp
++++ b/src/modules/commander/Commander.cpp
+@@ -44,6 +44,11 @@
+ 
+ #include "Commander.hpp"
+ 
++// zzu_fly: SITL 演练无遥控器/地面站心跳 ⇒ rc_signal_lost 恒为真，任何 failsafe 都会永久封锁模式切换。
++// 设 PX4_SKIP_RC_FAILSAFE=1 可跳过该判定（仅本地演练树，不影响比赛环境）。
++#include <cstdlib>
++static const bool zzu_fly_skip_rc_failsafe = (std::getenv("PX4_SKIP_RC_FAILSAFE") != nullptr);
++
+ /* commander module headers */
+ #include "Arming/PreFlightCheck/PreFlightCheck.hpp"
+ #include "Arming/ArmAuthorization/ArmAuthorization.h"
+@@ -690,7 +695,7 @@ transition_result_t Commander::arm(arm_disarm_reason_t calling_reason, bool run_
+ 
+ 	if (run_preflight_checks && !_armed.armed) {
+ 		if (_vehicle_control_mode.flag_control_manual_enabled) {
+-			if (_vehicle_control_mode.flag_control_climb_rate_enabled &&
++			if (!zzu_fly_skip_rc_failsafe && _vehicle_control_mode.flag_control_climb_rate_enabled &&
+ 			    !_status.rc_signal_lost && _is_throttle_above_center) {
+ 				mavlink_log_critical(&_mavlink_log_pub, "Arming denied: throttle above center\t");
+ 				events::send(events::ID("commander_arm_denied_throttle_center"),
+@@ -700,7 +705,7 @@ transition_result_t Commander::arm(arm_disarm_reason_t calling_reason, bool run_
+ 				return TRANSITION_DENIED;
+ 			}
+ 
+-			if (!_vehicle_control_mode.flag_control_climb_rate_enabled &&
++			if (!zzu_fly_skip_rc_failsafe && !_vehicle_control_mode.flag_control_climb_rate_enabled &&
+ 			    !_status.rc_signal_lost && !_is_throttle_low && _status.vehicle_type != vehicle_status_s::VEHICLE_TYPE_ROVER) {
+ 				mavlink_log_critical(&_mavlink_log_pub, "Arming denied: high throttle\t");
+ 				events::send(events::ID("commander_arm_denied_throttle_high"),
+@@ -812,8 +817,8 @@ Commander::Commander() :
+ 	_status.arming_state = vehicle_status_s::ARMING_STATE_INIT;
+ 
+ 	/* mark all signals lost as long as they haven't been found */
+-	_status.rc_signal_lost = true;
+-	_status.data_link_lost = true;
++	_status.rc_signal_lost = !zzu_fly_skip_rc_failsafe;   // zzu_fly
++	_status.data_link_lost = !zzu_fly_skip_rc_failsafe;   // zzu_fly
+ 
+ 	_status_flags.offboard_control_signal_lost = true;
+ 
+@@ -2701,7 +2706,7 @@ Commander::run()
+ 					mavlink_log_critical(&_mavlink_log_pub, "Manual control lost\t");
+ 					events::send(events::ID("commander_rc_lost"), {events::Log::Critical, events::LogInternal::Info},
+ 						     "Manual control lost");
+-					_status.rc_signal_lost = true;
++					_status.rc_signal_lost = !zzu_fly_skip_rc_failsafe;   // zzu_fly
+ 					set_health_flags(subsystem_info_s::SUBSYSTEM_TYPE_RCRECEIVER, true, true,
+ 							 false, _status);
+ 					_status_changed = true;
+@@ -3733,7 +3738,7 @@ void Commander::data_link_check()
+ 		if ((_datalink_last_heartbeat_gcs != 0)
+ 		    && hrt_elapsed_time(&_datalink_last_heartbeat_gcs) > (_param_com_dl_loss_t.get() * 1_s)) {
+ 
+-			_status.data_link_lost = true;
++			_status.data_link_lost = !zzu_fly_skip_rc_failsafe;   // zzu_fly
+ 			_status.data_link_lost_counter++;
+ 
+ 			mavlink_log_info(&_mavlink_log_pub, "Connection to ground station lost\t");
+diff --git a/src/modules/micrortps_bridge/micro-CDR b/src/modules/micrortps_bridge/micro-CDR
+--- a/src/modules/micrortps_bridge/micro-CDR
++++ b/src/modules/micrortps_bridge/micro-CDR
+@@ -1 +1 @@
+-Subproject commit 21d3cfe3ae570d1674da0105ab23b80958e0449a
++Subproject commit 21d3cfe3ae570d1674da0105ab23b80958e0449a-dirty

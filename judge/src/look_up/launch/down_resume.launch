@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ===================================================================
+  down_resume.launch - 主启动文件
+  一键启动所有仿真节点（原 1.sh 的 docker/tmux 版本改为标准 ROS launch）
+  用法: roslaunch down_resume.launch
+  (将此文件放在工作区根目录或任意 launch 目录下)
+==================================================================== -->
+
+<launch>
+    <!-- ========== 全局参数 ========== -->
+    <arg name="num_drones" default="1" />
+    <arg name="mission_filename" default="mission_down.json" />
+
+    <!-- ========== 1. 定位 ========== -->
+    <include file="$(find pose_init)/launch/pose.launch" />
+
+    <!-- ========== 2. 云台控制 (非roslaunch脚本，需单独处理) ========== -->
+    <!-- 原始命令: cd $HOME/ZZU_FLY/src/gimbal && bash multi_gimbal_control.sh -->
+    <!-- 如已封装为 ROS 节点，取消下方注释 -->
+    <!-- <node name="gimbal_control" pkg="gimbal" type="multi_gimbal_control.sh" output="screen" /> -->
+
+    <!-- ========== 3. 静态变换 ========== -->
+    <include file="$(find simple_navigator)/launch/static_tf.launch" />
+
+    <!-- ========== 4. TF 变换树 ========== -->
+    <include file="$(find transform_tree)/launch/tf.launch">
+        <arg name="num_drones" value="$(arg num_drones)" />
+    </include>
+
+    <!-- ========== 5. 目标管理 ========== -->
+    <include file="$(find look_up)/launch/target_lookup_service.launch" />
+
+    <!-- ========== 6. 总控节点 ========== -->
+    <include file="$(find look_up)/launch/spawn_mux_swarm.launch">
+        <arg name="num_drones" value="$(arg num_drones)" />
+    </include>
+
+    <!-- ========== 7. 起飞命令 ========== -->
+    <include file="$(find fly)/launch/fly.launch">
+        <arg name="drone_quantity" value="$(arg num_drones)" />
+    </include>
+
+    <!-- ========== 8. 导航 ========== -->
+    <include file="$(find simple_navigator)/launch/nav.launch">
+        <arg name="num_drones" value="$(arg num_drones)" />
+    </include>
+
+    <!-- ========== 9. 定点巡航 ========== -->
+    <include file="$(find task_manager)/launch/task.launch">
+        <arg name="num_drones" value="$(arg num_drones)" />
+        <arg name="mission_filename" value="$(arg mission_filename)" />
+    </include>
+
+    <!-- ========== 10. 检测节点 (非roslaunch脚本，需单独处理) ========== -->
+    <!-- 原始命令: cd $HOME/ZZU_FLY/src/yolo && bash multi_yolo_detecting.sh -->
+    <!-- 如已封装为 ROS 节点，取消下方注释 -->
+    <!-- <node name="yolo_detecting" pkg="yolo" type="multi_yolo_detecting.sh" output="screen" /> -->
+
+    <!-- ========== 11. 追踪节点 ========== -->
+    <include file="$(find tracking)/launch/tracking.launch">
+        <arg name="num_drones" value="$(arg num_drones)" />
+    </include>
+
+    <!-- ========== 12. 坐标计算节点 (非roslaunch脚本，需单独处理) ========== -->
+    <!-- 原始命令: cd $HOME/ZZU_FLY/src/yolo && bash multi_solving.sh -->
+    <!-- 如已封装为 ROS 节点，取消下方注释 -->
+    <!-- <node name="yolo_solving" pkg="yolo" type="multi_solving.sh" output="screen" /> -->
+
+</launch>

@@ -1,0 +1,23 @@
+# ===== 构建产物 / 缓存 =====
+build/
+devel/
+logs/
+.catkin_tools/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# ===== 大文件 / 模型 / 数据 =====
+*.pt
+*.pdf
+*.bag
+XTDrone/
+geographiclib/
+gazebo_map_assets/
+my_maps/
+recordings/
+
+# ===== 编译出来的可执行文件 =====
+src/auto_explore/test/astar_test
+tools/gz_debug/

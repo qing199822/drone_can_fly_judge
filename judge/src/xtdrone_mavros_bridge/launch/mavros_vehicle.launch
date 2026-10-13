@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<!-- 单架 Typhoon 的 MAVROS 节点（由 serial_swarm_bringup.py 逐架调用）。
+
+     与 spawn_drones.launch 中每机 MAVROS 的配置保持一致：
+         drone i -> fcu_url = udp://:1454i@localhost:1458i, tgt_system = i+1
+     PX4 侧端口由 ROMFS/.../init.d-posix/rcS 决定：
+         udp_offboard_port_remote = 14540 + px4_instance
+         udp_offboard_port_local  = 14580 + px4_instance
+
+     ============================ 2026-09-28 复盘修复 ============================
+     背景（上一版这里的做法是错的，且**静默失效**）：
+       旧版写法是 include mavros 的 px4.launch，然后起一个 rosservice 节点调
+       /<vehicle>/mavros/set_blacklist 想"事后"关掉 fake_gps。但这一版 mavros 里
+       **根本没有 set_blacklist 这个服务** —— logs/serial_bringup/mavros_0.log:299：
+           ERROR: Service [/typhoon_h480_0/mavros/set_blacklist] is not available.
+       而同一份日志 204 行明确写着 `Plugin fake_gps loaded` —— 也就是说 fake_gps
+       一直是**启用**状态，参数还是 geo_origin=苏黎世(lat 47.3667, lon 8.55, alt 408)、
+       use_mocap=True / use_vision=False / 5Hz，而本工程**没有任何节点**往
+       /<vehicle>/mavros/mocap/pose 发位姿。
+       同时 SDF 里是带真实 GPS 传感器的（typhoon_h480_0.sdf 引 model://gps，
+       而 gps.sdf 里就是 <sensor type="gps">），PX4 侧 rcS 又是 EKF2_AID_MASK=1（GPS 为主）
+       → 两路 GPS 打架，最典型的表现就是位置估计以 5~20 m/s 漂移/跳变、真值高度一路
+       爬过 6m 被判 0（见 DIAGNOSIS_ALTITUDE_EKF_2026-09-28.md）。
+
+     现在改为**静态**黑名单（不依赖任何运行时服务）：
+       用工作区自己的 config/px4_pluginlists_zzufly.yaml（= 系统 px4_pluginlists.yaml +
+       `- fake_gps`），直接 include mavros 的 node.launch，把 pluginlists_yaml 指过去。
+       要恢复旧行为：把那个 yaml 里的 `- fake_gps` 一行删掉即可。
+     ============================================================================
+-->
+<launch>
+    <arg name="vehicle" default="typhoon_h480_0"/>
+    <arg name="drone_id" default="0"/>
+    <arg name="tgt_system" default="1"/>
+    <arg name="tgt_component" default="1"/>
+
+    <group ns="$(arg vehicle)">
+        <include file="$(find mavros)/launch/node.launch">
+            <arg name="pluginlists_yaml"
+                 value="$(find xtdrone_mavros_bridge)/config/px4_pluginlists_zzufly.yaml"/>
+            <arg name="config_yaml" value="$(find mavros)/launch/px4_config.yaml"/>
+            <arg name="fcu_url" value="udp://:1454$(arg drone_id)@localhost:1458$(arg drone_id)"/>
+            <arg name="gcs_url" value=""/>
+            <arg name="tgt_system" value="$(arg tgt_system)"/>
+            <arg name="tgt_component" value="$(arg tgt_component)"/>
+            <arg name="log_output" value="screen"/>
+        </include>
+    </group>
+</launch>

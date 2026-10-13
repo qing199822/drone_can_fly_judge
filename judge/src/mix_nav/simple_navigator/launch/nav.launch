@@ -1,0 +1,39 @@
+<launch>
+
+    <!-- 
+      ARGUMENTS
+      'num_drones' must be provided by the user.
+      Example: roslaunch simple_navigator nav.launch num_drones:=3
+    -->
+    <arg name="num_drones" />
+    <arg name="vehicle_type" default="typhoon_h480" />
+
+    <!-- Internal argument for recursion, do not set from command line. -->
+    <arg name="drone_id" default="0" />
+
+    <!-- 
+      RECURSIVE LOGIC BLOCK
+      This group is only executed if 'drone_id' is less than 'num_drones'.
+      NOTE: The '<' symbol is replaced by '&lt;' to be XML-compliant.
+    -->
+    <group if="$(eval drone_id &lt; num_drones)">
+
+        <!-- Step 1: Launch the node for the current drone. -->
+        <node pkg="simple_navigator" type="simple_navigator_node"
+              name="waypoint_navigator_$(arg vehicle_type)_$(arg drone_id)"
+              args="$(arg vehicle_type) $(arg drone_id)"
+              output="screen"
+              respawn="true">
+        </node>
+
+        <!-- Step 2: Call this launch file again, but with an incremented drone_id. -->
+        <include file="$(find simple_navigator)/launch/nav.launch">
+            <arg name="num_drones"   value="$(arg num_drones)" />
+            <arg name="vehicle_type" value="$(arg vehicle_type)" />
+            <arg name="drone_id"     value="$(eval drone_id + 1)" />
+        </include>
+
+    </group>
+    <!-- Recursion stops when 'drone_id' equals 'num_drones'. -->
+
+</launch>

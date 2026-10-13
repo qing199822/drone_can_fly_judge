@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>simple_navigator</name>
+  <version>0.1.0</version>
+  <description>0</description>
+
+  <!-- 维护者信息：请务必修改为您自己的信息 -->
+  <maintainer email="your_email@example.com">Your Name</maintainer>
+
+  <!-- 许可证：推荐使用开源许可证，例如 BSD, MIT, Apache 2.0 -->
+  <license>BSD</license>
+
+  <!-- 
+    构建工具依赖。对于Catkin包，这总是catkin。
+  -->
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- 
+    构建依赖 (Build Dependencies)
+    这些是编译您的C++代码时所需要的包。
+  -->
+  <build_depend>roscpp</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>tf</build_depend>
+
+  <!-- 
+    执行依赖 (Execution Dependencies)
+    这些是运行您的节点时所需要的包。
+    通常，执行依赖和构建依赖是相同的。
+  -->
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf</exec_depend>
+
+  <test_depend>rostest</test_depend>
+
+</package>

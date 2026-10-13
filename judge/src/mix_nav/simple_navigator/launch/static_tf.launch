@@ -1,0 +1,10 @@
+<launch>
+    <node pkg="tf" type="static_transform_publisher" name="typhoon_h480_0_map_to_world"
+    args="0.0 0.0 0 0.0 0.0 0.0 /map /world 40" />
+    <node pkg="tf" type="static_transform_publisher" name="typhoon_h480_0_world_to_ground_plane"
+    args="0.0 0.0 0 0.0 0.0 0.0 /world /ground_plane 40" />
+    <node pkg="tf" type="static_transform_publisher" name="base_to_camera_broadcaster"
+    args="-0.106 0.03 -0.586 0 0.523 0 base_link camera_link 40" />
+    <node pkg="tf" type="static_transform_publisher" name="base_to_camera"
+    args="0 0 0 -1.5708 -0.5236 -1.5708 camera_link camera_optical_link 40" />
+</launch>

@@ -1,0 +1,1044 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- 6-drone swarm: 道路航点（一机一路零交叉）+ 转移高度（先爬 10m 直飞再下降） -->
+  <arg name="num_drones" default="6"/> <!-- 参与自主探索的无人机数量 -->
+  <arg name="vehicle_type" default="typhoon_h480"/> <!-- 无人机名称前缀，用于拼话题名 -->
+  <!-- ===== 环境适配层：出生点布局（世界系，单位 m）=====
+       世界坐标 = 局部 odom 坐标 + 出生点。默认 = 本地调试布局：
+         0:(-17,-3) 1:(-14,-3) 2:(-17,0) 3:(-14,0) 4:(-17,3) 5:(-14,3)
+       比赛时组委会用官方 XTDrone sitl_config/launch/robocup.launch，出生点是
+         0:(0,-3) 1:(3,-3) 2:(0,0) 3:(3,0) 4:(0,3) 5:(3,3)
+       只差 spawn_origin_x → 起算法栈时传 spawn_origin_x:=0 即可切换。
+       必须与 pose_init / scan_map_fuser / serial_swarm_bringup 保持一致，
+       否则播报给裁判的全局坐标会整体偏移，1m 判据必失败。
+       start_sim_only.sh 的 env-profile=official 会自动传这组值。 -->
+  <arg name="spawn_origin_x" default="-17.0"/>
+  <arg name="spawn_origin_y" default="-3.0"/>
+  <arg name="spawn_stride_x" default="3.0"/>
+  <arg name="spawn_stride_y" default="3.0"/>
+  <arg name="rviz" default="true"/> <!-- 是否启动 RViz 可视化界面 -->
+  <arg name="cut_radius" default="0.7"/> <!-- 激光自滤波半径：剔除打到自身机架的点（m） -->
+  <arg name="target_altitude" default="4.5"/> <!-- 六机统一巡逻高度（m） -->
+  <arg name="transfer_altitude" default="4.5"/> <!-- 六机统一道路转移高度（m） -->
+  <arg name="map_topic" default="/map"/> <!-- 全局共享栅格地图话题 -->
+  <arg name="map_frame" default="map"/> <!-- 共享地图坐标系名 -->
+  <arg name="save_path" default="/home/lishu2/2025_ZZU_FLY/my_maps/swarm_map"/> <!-- 每架无人机探索地图保存路径前缀 -->
+  <arg name="road_model" default="/home/lishu2/2025_ZZU_FLY/best2.pt"/>
+  <arg name="road_class" default="0"/>
+  <arg name="infer_imgsz" default="640"/>
+  <arg name="infer_conf" default="0.25"/>
+  <arg name="infer_iou" default="0.7"/>
+  <!-- 使用 yolo_gpu 环境中的 torch/cu128 运行道路分割；可传 infer_device:=cpu 回退 -->
+  <arg name="infer_device" default="cuda:0"/>
+  <arg name="infer_max_det" default="10"/>
+  <arg name="road_approach_distance" default="30.0"/>
+  <arg name="road_min_speed" default="3.0"/>
+  <arg name="road_approach_speed" default="2.5"/>
+  <arg name="road_target_approach_speed" default="1.2"/>
+  <arg name="road_target_reorient_timeout" default="4.0"/>
+
+  <!-- ===== typhoon_h480_0: road_x_3(y=45) ===== -->
+  <group ns="typhoon_h480_0" if="$(eval int(arg('num_drones')) >= 1)">
+    <node pkg="auto_explore" type="scan_self_filter_node" name="scan_self_filter" output="screen">
+      <param name="scan_topic" value="/typhoon_h480_0/scan"/> <!-- 输入：该机原始 2D 激光话题 -->
+      <param name="scan_filtered_topic" value="/typhoon_h480_0/scan_filtered"/> <!-- 输出：剔除自身点云后的激光话题 -->
+      <param name="pose_topic" value="/typhoon_h480_0/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cut_radius" value="$(arg cut_radius)"/> <!-- 自滤波切除半径：激光点距机身小于该值则剔除（m） -->
+      <param name="laser_z_offset" value="0.6"/> <!-- 激光雷达相对 base_link 的安装高度（m） -->
+      <param name="ground_alt_offset" value="1.0"/> <!-- 地面高度补偿：高于此高度的点保留（m） -->
+      <param name="ground_margin" value="0.8"/> <!-- 地面点过滤余量：防止地面点被误当障碍（m） -->
+    </node>
+    <node pkg="auto_explore" type="road_follow_gpu.sh" name="road_follow" output="screen">
+      <param name="vehicle" value="typhoon_h480_0"/>
+      <param name="image_topic" value="/typhoon_h480_0/realsense/depth_camera/color/image_raw"/>
+      <param name="output_topic" value="/typhoon_h480_0/road_follow/steering"/>
+      <param name="candidates_topic" value="/typhoon_h480_0/road_follow/candidates"/>
+      <param name="debug_topic" value="/typhoon_h480_0/road_follow/debug_image"/>
+      <param name="publish_debug" value="true"/>
+      <param name="road_model" value="$(arg road_model)"/>
+      <param name="road_class" value="$(arg road_class)"/>
+      <param name="infer_imgsz" value="$(arg infer_imgsz)"/>
+      <param name="infer_conf" value="$(arg infer_conf)"/>
+      <param name="infer_iou" value="$(arg infer_iou)"/>
+      <param name="infer_device" value="$(arg infer_device)"/>
+      <param name="infer_max_det" value="$(arg infer_max_det)"/>
+      <param name="hold_seconds" value="1.2"/>
+    </node>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_laser_tf"
+          args="0 0 0.6 0 0 0 base_link_0 laser_2d_0 40"/> <!-- 发布 base_link_0 -> laser_2d_0 静态 TF -->
+    <node pkg="auto_explore" type="odom_broadcaster_node" name="odom_broadcaster" output="screen">
+      <param name="pose_topic" value="/typhoon_h480_0/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="parent_frame" value="odom_0"/> <!-- 里程计父坐标系（odom_{id}） -->
+      <param name="child_frame" value="base_link_0"/> <!-- 里程计子坐标系（base_link_{id}） -->
+    </node>
+    <node pkg="auto_explore" type="area_mission_node" name="area_mission_node" output="screen">
+      <param name="vehicle" value="typhoon_h480_0"/> <!-- 本节点控制的无人机完整命名空间 -->
+      <param name="spawn_origin_x" value="$(arg spawn_origin_x)"/> <!-- 环境适配层：出生点布局 -->
+      <param name="spawn_origin_y" value="$(arg spawn_origin_y)"/>
+      <param name="spawn_stride_x" value="$(arg spawn_stride_x)"/>
+      <param name="spawn_stride_y" value="$(arg spawn_stride_y)"/>
+      <param name="scan_topic" value="/typhoon_h480_0/scan_filtered"/> <!-- 用于探索的过滤后激光话题 -->
+      <param name="map_topic" value="$(arg map_topic)"/> <!-- 订阅的全局共享地图话题 -->
+      <param name="pose_topic" value="/typhoon_h480_0/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cmd_vel_topic" value="/typhoon_h480_0/mux_inputs/navigator/cmd_vel"/> <!-- MUX navigator 通道的速度指令话题（自主导航输出） -->
+      <param name="cmd_topic" value="/xtdrone/typhoon_h480_0/cmd"/> <!-- XTDrone 统一命令话题 -->
+      <param name="control_rate" value="20.0"/> <!-- S13: 控制循环 50→20 Hz 减负，baro/pose 不会被高负载压制 -->
+      <param name="manual_unknown_as_obstacle" value="true"/> <!-- 是否把未知栅格当作障碍物处理 -->
+      <param name="map_frame" value="$(arg map_frame)"/> <!-- 全局地图坐标系 -->
+      <param name="base_frame" value="base_link_0"/> <!-- 机体坐标系（base_link_{id}） -->
+      <param name="odom_frame" value="odom_0"/> <!-- 里程计坐标系（odom_{id}） -->
+      <param name="target_altitude" value="$(arg target_altitude)"/> <!-- 探索巡航目标高度（m） -->
+      <param name="transfer_altitude" value="$(arg transfer_altitude)"/> <!-- 航点间转移飞行高度（m） -->
+      <param name="wp_reach_tolerance" value="3.0"/>
+      <param name="patrol_skip_enabled" value="false"/> <!-- 只在到达航点后推进队列 -->
+      <param name="sensor_timeout" value="0.5"/>
+      <param name="pose_timeout" value="0.5"/>
+      <param name="pose_stale_recovery_timeout" value="2.0"/>
+      <param name="pose_stale_recovery_speed" value="0.6"/>
+      <param name="region_margin" value="6.0"/>
+      <param name="patrol_spacing" value="5.0"/> <!-- 旧参数（已废弃，仅保留兼容；巡逻环不再用它） -->
+      <param name="patrol_outer_margin" value="2.0"/> <!-- 最外环相对责任区内缩（m，必须 > 1.5m 边界硬保护） -->
+      <param name="patrol_rings" value="4"/> <!-- 巡逻环数（每环 4 点，BL→BR→TR→TL） -->
+      <param name="patrol_ring_ratio" value="0.7"/> <!-- 相邻环比例（等比例中心缩放，保证长宽比不变） -->
+      <param name="patrol_astar_enabled" value="true"/> <!-- /map 上 A* 全局巡逻路径：给反应式 MPPI 提供绕房区的路径 -->
+      <param name="patrol_astar_inflate" value="0.6"/> <!-- A* 障碍膨胀半径（m） -->
+      <param name="patrol_astar_lookahead" value="6.0"/> <!-- MPPI 实际跟随的路径前视点距离（m） -->
+      <param name="patrol_astar_replan" value="1.0"/> <!-- A* 重规划周期（s） -->
+      <param name="front_cone_deg" value="22.0"/> <!-- 深度安全层前方锥半角（度）：锥外深度点不再触发硬停/latch -->
+      <param name="patrol_speed_limit" value="3.5"/>
+      <param name="patrol_turn_speed_cap" value="2.8"/>
+      <!-- 2026-09-24：pocket trap 修复三件套（plan 1+2+3） -->
+      <param name="patrol_retreat_time" value="6.0"/>      <!-- 跳点后朝区域中心退的时长 -->
+      <param name="patrol_hover_skip_blacklist" value="40.0"/> <!-- 2026-09-27：4 航点布局下 120s 太长（一次悬停就丢掉 1/4 航线），降到 40s -->
+      <param name="patrol_wp_blacklist_time" value="60.0"/>      <!-- 2026-09-27：180→60s，配合"全冷却则清空"逻辑 -->
+      <param name="road_topic" value="/typhoon_h480_0/road_follow/steering"/>
+      <param name="road_candidates_topic" value="/typhoon_h480_0/road_follow/candidates"/>
+      <param name="road_confidence_threshold" value="0.25"/>
+      <param name="road_timeout" value="1.0"/>
+      <param name="road_guidance_hold_duration" value="2.0"/>
+      <param name="road_hold_confidence_decay" value="0.65"/>
+      <param name="road_guidance_crawl_speed" value="1.2"/>
+      <param name="road_recovery_speed" value="1.0"/>
+      <param name="road_approach_distance" value="$(arg road_approach_distance)"/>
+      <param name="road_min_speed" value="$(arg road_min_speed)"/>
+      <param name="road_approach_speed" value="$(arg road_approach_speed)"/>
+      <param name="road_target_approach_speed" value="$(arg road_target_approach_speed)"/>
+      <param name="road_target_reorient_timeout" value="$(arg road_target_reorient_timeout)"/>
+      <param name="road_approach_target_weight" value="0.8"/>
+      <param name="road_approach_prior_weight" value="0.2"/>
+      <param name="road_speed_limit" value="3.5"/>
+      <param name="road_align_distance" value="12.0"/>
+      <param name="road_align_perp_weight" value="0.7"/>
+      <param name="road_geom_only_after_lost" value="1.0"/>
+      <param name="transit_reach_tolerance" value="20.0"/>
+      <param name="transit_speed_limit" value="3.0"/>
+      <param name="transit_astar_max_detour_ratio" value="1.6"/>
+      <param name="transit_road_weight_min" value="0.45"/>
+      <param name="transit_road_weight_max" value="0.75"/>
+      <param name="road_search_yaw_rate" value="0.35"/>
+      <param name="road_accel_limit" value="1.2"/>
+      <param name="road_pitch_limit" value="0.22"/>
+      <param name="obstacle_warn_distance" value="5.0"/>
+      <param name="obstacle_side_safe" value="0.5"/> <!-- 2026-09-27 狭窄通道代价衰减半径：2.5m → 0.5m，使两个房区间的窄缝代价衰减更快 -->
+      <param name="obstacle_turn_rate" value="0.8"/>
+      <param name="near_goal_distance" value="8.0"/>
+      <param name="near_goal_depth" value="2.0"/>
+      <param name="near_goal_confirm_cycles" value="5"/>
+      <param name="descend_dist" value="20.0"/> <!-- 到达目标点前开始下降的距离（m） -->
+      <param name="map_save_path" value="$(arg save_path)_0"/> <!-- 该机探索地图保存路径 -->
+      <param name="road_max_seconds" value="0.0"/> <!-- 2026-09-28：用户要求取消 ROAD 硬时限，故置 0（≤0 = 不限时）；要恢复设回 60/180 -->
+      <param name="max_lin_x" value="5.0"/> <!-- 最大前向线速度（m/s） -->
+      <param name="k_lin" value="1.0"/> <!-- 线速度比例增益 -->
+      <param name="accel_limit" value="2.5"/> <!-- 线加速度限制（m/s^2） -->
+      <param name="min_lin_x" value="2.0"/> <!-- 最低巡航速度（m/s）：非紧急停车状态的前向速度下限 -->
+      <param name="smooth_rate_xyz" value="3.0"/> <!-- 输出速度变化率限制（m/s^2），高速下需同步加大 -->
+      <param name="avoid_dist" value="10.0"/> <!-- 机间避障距离（m） -->
+      <!-- 2026-09-27：MPPI/深度/front_inhibit 权重集中在 src/auto_explore/config/mppi_params.yaml
+           改完 yaml 后重新 rosparam load 或调用 ~/reload_mppi_params 服务即可生效。 -->
+      <rosparam command="load" file="$(find auto_explore)/config/mppi_params.yaml"/>
+      <param name="max_pose_jump" value="4.0"/>
+      <param name="min_safe_altitude" value="1.0"/>
+      <!-- S10：双向高度控制 + ALT_RECOVER（掉高不再永久停机） -->
+      <param name="alt_climb_deadband" value="0.05"/> <!-- S12: 紧对称：目标 4.5m 时<4.45m 就爬 --> <!-- 之前 0.3 太大，导致 4.5m 起飞后惯性上冲至 5.5m 不收敛 --> <!-- 低于目标 0.3m 就允许爬升 -->
+      <param name="alt_descend_deadband" value="0.05"/> <!-- S12: 目标 4.5m 时>4.55m 就降，锁住高度 --> <!-- 紧死区，>目标 0.05m 即下 -->
+      <param name="climb_rate" value="0.5"/> <!-- 爬升速度上限（m/s） -->
+      <param name="alt_recover_enter_z" value="3.5"/> <!-- 低于该高度进入 ALT_RECOVER（对应 target_altitude=4.5） -->
+      <param name="alt_recover_exit_z" value="4.4"/> <!-- S11: 目标 4.5m 时回到 4.4m 才退 alt_recover，避免回弹 --> <!-- 回到该高度才恢复前向 -->
+      <param name="max_safe_altitude" value="30.0"/> <!-- EKF 高度发散上界（>30m 视为异常并保持） -->
+      <!-- 相机内参/外参（realsense 320×240 标定）——不放在 yaml 中，保持每机独立可覆盖 -->
+      <param name="depth_fx" value="205.4696"/>
+      <param name="depth_fy" value="205.4696"/>
+      <param name="depth_cx" value="320.0"/>
+      <param name="depth_cy" value="240.0"/>
+      <param name="depth_extrinsic_x" value="0.0"/>
+      <param name="depth_extrinsic_y" value="0.0"/>
+      <param name="depth_extrinsic_z" value="-0.162"/>
+      <param name="depth_extrinsic_pitch" value="0.5236"/>
+      <param name="depth_extrinsic_mode" value="tf"/> <!-- 2026-09-25：外参优先查 TF(base_link←camera frame)，查不到退回参数化外参 -->
+      <param name="patrol_speed_envelope_range" value="6.0"/>
+      <param name="patrol_speed_envelope_min" value="0.3"/>
+      <param name="lookahead_dist" value="4.0"/> <!-- 路径跟踪前视距离（m） -->
+      <param name="occupied_thresh" value="50"/> <!-- 占据栅格判定阈值 -->
+      <param name="manual_goal_timeout" value="90.0"/> <!-- 单次目标点超时时间（s） -->
+      <param name="manual_max_yaw_rate" value="0.8"/> <!-- 最大偏航角速度（rad/s） -->
+      <param name="manual_brake_dist" value="10.0"/> <!-- 接近航点时的刹车距离（m） -->
+      <param name="manual_replan_interval" value="0.5"/> <!-- 局部重规划间隔（s） -->
+      <param name="plan_inflation" value="0.5"/> <!-- 规划障碍膨胀半径（m） -->
+      <param name="recovery_timeout" value="20.0"/> <!-- 卡死/异常恢复超时（s） -->
+      <param name="backtrack_dist" value="15.0"/> <!-- 遇阻回退距离（m） -->
+      <param name="transfer_dist" value="9999.0"/> <!-- 转移飞行判定距离（m） -->
+      <param name="plan_clear_radius" value="6.0"/> <!-- 规划路径周边清理半径（m） -->
+      <param name="robot_radius" value="0.35"/> <!-- 机器人碰撞半径（m） -->
+      <param name="mppi_robot_radius" value="0.35"/>
+      <!-- ROAD 阶段调参（速度下限/方向滤波/分支滞回/ROAD-MPPI 代价/诊断），见 config/area_mission_road.yaml -->
+      <rosparam file="$(find auto_explore)/config/area_mission_road.yaml" command="load"/>
+    </node>
+  </group>
+
+  <!-- ===== typhoon_h480_1: road_x_2(y=0) ===== -->
+  <group ns="typhoon_h480_1" if="$(eval int(arg('num_drones')) >= 2)">
+    <node pkg="auto_explore" type="scan_self_filter_node" name="scan_self_filter" output="screen">
+      <param name="scan_topic" value="/typhoon_h480_1/scan"/> <!-- 输入：该机原始 2D 激光话题 -->
+      <param name="scan_filtered_topic" value="/typhoon_h480_1/scan_filtered"/> <!-- 输出：剔除自身点云后的激光话题 -->
+      <param name="pose_topic" value="/typhoon_h480_1/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cut_radius" value="$(arg cut_radius)"/> <!-- 自滤波切除半径：激光点距机身小于该值则剔除（m） -->
+      <param name="laser_z_offset" value="0.6"/> <!-- 激光雷达相对 base_link 的安装高度（m） -->
+      <param name="ground_alt_offset" value="1.0"/> <!-- 地面高度补偿：高于此高度的点保留（m） -->
+      <param name="ground_margin" value="0.8"/> <!-- 地面点过滤余量：防止地面点被误当障碍（m） -->
+    </node>
+    <node pkg="auto_explore" type="road_follow_gpu.sh" name="road_follow" output="screen">
+      <param name="vehicle" value="typhoon_h480_1"/>
+      <param name="image_topic" value="/typhoon_h480_1/realsense/depth_camera/color/image_raw"/>
+      <param name="output_topic" value="/typhoon_h480_1/road_follow/steering"/>
+      <param name="candidates_topic" value="/typhoon_h480_1/road_follow/candidates"/>
+      <param name="debug_topic" value="/typhoon_h480_1/road_follow/debug_image"/>
+      <param name="publish_debug" value="true"/>
+      <param name="road_model" value="$(arg road_model)"/>
+      <param name="road_class" value="$(arg road_class)"/>
+      <param name="infer_imgsz" value="$(arg infer_imgsz)"/>
+      <param name="infer_conf" value="$(arg infer_conf)"/>
+      <param name="infer_iou" value="$(arg infer_iou)"/>
+      <param name="infer_device" value="$(arg infer_device)"/>
+      <param name="infer_max_det" value="$(arg infer_max_det)"/>
+      <param name="hold_seconds" value="1.2"/>
+    </node>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_laser_tf"
+          args="0 0 0.6 0 0 0 base_link_1 laser_2d_1 40"/> <!-- 发布 base_link_1 -> laser_2d_1 静态 TF：激光装在机体上方 0.6m，周期 40ms -->
+    <node pkg="auto_explore" type="odom_broadcaster_node" name="odom_broadcaster" output="screen">
+      <param name="pose_topic" value="/typhoon_h480_1/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="parent_frame" value="odom_1"/> <!-- 里程计父坐标系（odom_{id}） -->
+      <param name="child_frame" value="base_link_1"/> <!-- 里程计子坐标系（base_link_{id}） -->
+    </node>
+    <node pkg="auto_explore" type="area_mission_node" name="area_mission_node" output="screen">
+      <param name="vehicle" value="typhoon_h480_1"/> <!-- 本节点控制的无人机完整命名空间 -->
+      <param name="spawn_origin_x" value="$(arg spawn_origin_x)"/> <!-- 环境适配层：出生点布局 -->
+      <param name="spawn_origin_y" value="$(arg spawn_origin_y)"/>
+      <param name="spawn_stride_x" value="$(arg spawn_stride_x)"/>
+      <param name="spawn_stride_y" value="$(arg spawn_stride_y)"/>
+      <param name="scan_topic" value="/typhoon_h480_1/scan_filtered"/> <!-- 用于探索的过滤后激光话题 -->
+      <param name="map_topic" value="$(arg map_topic)"/> <!-- 订阅的全局共享地图话题 -->
+      <param name="pose_topic" value="/typhoon_h480_1/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cmd_vel_topic" value="/typhoon_h480_1/mux_inputs/navigator/cmd_vel"/> <!-- MUX navigator 通道的速度指令话题（自主导航输出） -->
+      <param name="cmd_topic" value="/xtdrone/typhoon_h480_1/cmd"/> <!-- XTDrone 统一命令话题 -->
+      <param name="control_rate" value="20.0"/> <!-- S13: 控制循环 50→20 Hz 减负，baro/pose 不会被高负载压制 -->
+      <param name="manual_unknown_as_obstacle" value="true"/> <!-- 是否把未知栅格当作障碍物处理 -->
+      <param name="map_frame" value="$(arg map_frame)"/> <!-- 全局地图坐标系 -->
+      <param name="base_frame" value="base_link_1"/> <!-- 机体坐标系（base_link_{id}） -->
+      <param name="odom_frame" value="odom_1"/> <!-- 里程计坐标系（odom_{id}） -->
+      <param name="target_altitude" value="$(arg target_altitude)"/> <!-- 探索巡航目标高度（m） -->
+      <param name="transfer_altitude" value="$(arg transfer_altitude)"/> <!-- 航点间转移飞行高度（m） -->
+      <param name="wp_reach_tolerance" value="3.0"/>
+      <param name="patrol_skip_enabled" value="false"/> <!-- 只在到达航点后推进队列 -->
+      <param name="sensor_timeout" value="0.5"/>
+      <param name="pose_timeout" value="0.5"/>
+      <param name="pose_stale_recovery_timeout" value="2.0"/>
+      <param name="pose_stale_recovery_speed" value="0.6"/>
+      <param name="region_margin" value="6.0"/>
+      <param name="patrol_spacing" value="5.0"/> <!-- 旧参数（已废弃，仅保留兼容；巡逻环不再用它） -->
+      <param name="patrol_outer_margin" value="2.0"/> <!-- 最外环相对责任区内缩（m，必须 > 1.5m 边界硬保护） -->
+      <param name="patrol_rings" value="4"/> <!-- 巡逻环数（每环 4 点，BL→BR→TR→TL） -->
+      <param name="patrol_ring_ratio" value="0.7"/> <!-- 相邻环比例（等比例中心缩放，保证长宽比不变） -->
+      <param name="patrol_astar_enabled" value="true"/> <!-- /map 上 A* 全局巡逻路径：给反应式 MPPI 提供绕房区的路径 -->
+      <param name="patrol_astar_inflate" value="0.6"/> <!-- A* 障碍膨胀半径（m） -->
+      <param name="patrol_astar_lookahead" value="6.0"/> <!-- MPPI 实际跟随的路径前视点距离（m） -->
+      <param name="patrol_astar_replan" value="1.0"/> <!-- A* 重规划周期（s） -->
+      <param name="front_cone_deg" value="22.0"/> <!-- 深度安全层前方锥半角（度）：锥外深度点不再触发硬停/latch -->
+      <param name="patrol_speed_limit" value="3.5"/>
+      <param name="patrol_turn_speed_cap" value="2.8"/>
+      <!-- 2026-09-24：pocket trap 修复三件套（plan 1+2+3） -->
+      <param name="patrol_retreat_time" value="6.0"/>      <!-- 跳点后朝区域中心退的时长 -->
+      <param name="patrol_hover_skip_blacklist" value="40.0"/> <!-- 2026-09-27：4 航点布局下 120s 太长（一次悬停就丢掉 1/4 航线），降到 40s -->
+      <param name="patrol_wp_blacklist_time" value="60.0"/>      <!-- 2026-09-27：180→60s，配合"全冷却则清空"逻辑 -->
+      <param name="road_topic" value="/typhoon_h480_1/road_follow/steering"/>
+      <param name="road_candidates_topic" value="/typhoon_h480_1/road_follow/candidates"/>
+      <param name="road_confidence_threshold" value="0.25"/>
+      <param name="road_timeout" value="1.0"/>
+      <param name="road_guidance_hold_duration" value="2.0"/>
+      <param name="road_hold_confidence_decay" value="0.65"/>
+      <param name="road_guidance_crawl_speed" value="1.2"/>
+      <param name="road_recovery_speed" value="1.0"/>
+      <param name="road_approach_distance" value="$(arg road_approach_distance)"/>
+      <param name="road_min_speed" value="$(arg road_min_speed)"/>
+      <param name="road_approach_speed" value="$(arg road_approach_speed)"/>
+      <param name="road_target_approach_speed" value="$(arg road_target_approach_speed)"/>
+      <param name="road_target_reorient_timeout" value="$(arg road_target_reorient_timeout)"/>
+      <param name="road_approach_target_weight" value="0.8"/>
+      <param name="road_approach_prior_weight" value="0.2"/>
+      <param name="road_speed_limit" value="3.5"/>
+      <param name="road_align_distance" value="12.0"/>
+      <param name="road_align_perp_weight" value="0.7"/>
+      <param name="road_geom_only_after_lost" value="1.0"/>
+      <param name="transit_reach_tolerance" value="20.0"/>
+      <param name="transit_speed_limit" value="3.0"/>
+      <param name="transit_astar_max_detour_ratio" value="1.6"/>
+      <param name="transit_road_weight_min" value="0.45"/>
+      <param name="transit_road_weight_max" value="0.75"/>
+      <param name="road_search_yaw_rate" value="0.35"/>
+      <param name="road_accel_limit" value="1.2"/>
+      <param name="road_pitch_limit" value="0.22"/>
+      <param name="obstacle_warn_distance" value="5.0"/>
+      <param name="obstacle_side_safe" value="0.5"/> <!-- 2026-09-27 狭窄通道代价衰减半径：2.5m → 0.5m，使两个房区间的窄缝代价衰减更快 -->
+      <param name="obstacle_turn_rate" value="0.8"/>
+      <param name="near_goal_distance" value="8.0"/>
+      <param name="near_goal_depth" value="2.0"/>
+      <param name="near_goal_confirm_cycles" value="5"/>
+      <param name="descend_dist" value="20.0"/> <!-- 到达目标点前开始下降的距离（m） -->
+      <param name="map_save_path" value="$(arg save_path)_1"/> <!-- 该机探索地图保存路径 -->
+      <param name="road_max_seconds" value="0.0"/> <!-- 2026-09-28：用户要求取消 ROAD 硬时限，故置 0（≤0 = 不限时）；要恢复设回 60/180 -->
+      <param name="max_lin_x" value="5.0"/> <!-- 最大前向线速度（m/s） -->
+      <param name="k_lin" value="1.0"/> <!-- 线速度比例增益 -->
+      <param name="accel_limit" value="2.5"/> <!-- 线加速度限制（m/s^2） -->
+      <param name="min_lin_x" value="2.0"/> <!-- 最低巡航速度（m/s）：非紧急停车状态的前向速度下限 -->
+      <param name="smooth_rate_xyz" value="3.0"/> <!-- 输出速度变化率限制（m/s^2），高速下需同步加大 -->
+      <param name="avoid_dist" value="10.0"/> <!-- 机间避障距离（m） -->
+      <!-- 2026-09-27：MPPI/深度/front_inhibit 权重集中在 src/auto_explore/config/mppi_params.yaml
+           改完 yaml 后重新 rosparam load 或调用 ~/reload_mppi_params 服务即可生效。 -->
+      <rosparam command="load" file="$(find auto_explore)/config/mppi_params.yaml"/>
+      <param name="max_pose_jump" value="4.0"/>
+      <param name="min_safe_altitude" value="1.0"/>
+      <!-- S10：双向高度控制 + ALT_RECOVER（掉高不再永久停机） -->
+      <param name="alt_climb_deadband" value="0.05"/> <!-- S12: 紧对称：目标 4.5m 时<4.45m 就爬 --> <!-- 之前 0.3 太大，导致 4.5m 起飞后惯性上冲至 5.5m 不收敛 --> <!-- 低于目标 0.3m 就允许爬升 -->
+      <param name="alt_descend_deadband" value="0.05"/> <!-- S12: 目标 4.5m 时>4.55m 就降，锁住高度 --> <!-- 紧死区，>目标 0.05m 即下 -->
+      <param name="climb_rate" value="0.5"/> <!-- 爬升速度上限（m/s） -->
+      <param name="alt_recover_enter_z" value="3.5"/> <!-- 低于该高度进入 ALT_RECOVER（对应 target_altitude=4.5） -->
+      <param name="alt_recover_exit_z" value="4.4"/> <!-- S11: 目标 4.5m 时回到 4.4m 才退 alt_recover，避免回弹 --> <!-- 回到该高度才恢复前向 -->
+      <param name="max_safe_altitude" value="30.0"/> <!-- EKF 高度发散上界（>30m 视为异常并保持） -->
+      <!-- 相机内参/外参（realsense 320×240 标定）——不放在 yaml 中，保持每机独立可覆盖 -->
+      <param name="depth_fx" value="205.4696"/>
+      <param name="depth_fy" value="205.4696"/>
+      <param name="depth_cx" value="320.0"/>
+      <param name="depth_cy" value="240.0"/>
+      <param name="depth_extrinsic_x" value="0.0"/>
+      <param name="depth_extrinsic_y" value="0.0"/>
+      <param name="depth_extrinsic_z" value="-0.162"/>
+      <param name="depth_extrinsic_pitch" value="0.5236"/>
+      <param name="depth_extrinsic_mode" value="tf"/> <!-- 2026-09-25：外参优先查 TF(base_link←camera frame)，查不到退回参数化外参 -->
+      <param name="patrol_speed_envelope_range" value="6.0"/>
+      <param name="patrol_speed_envelope_min" value="0.3"/>
+      <param name="lookahead_dist" value="4.0"/> <!-- 路径跟踪前视距离（m） -->
+      <param name="occupied_thresh" value="50"/> <!-- 占据栅格判定阈值 -->
+      <param name="manual_goal_timeout" value="90.0"/> <!-- 单次目标点超时时间（s） -->
+      <param name="manual_max_yaw_rate" value="0.8"/> <!-- 最大偏航角速度（rad/s） -->
+      <param name="manual_brake_dist" value="10.0"/> <!-- 接近航点时的刹车距离（m） -->
+      <param name="manual_replan_interval" value="0.5"/> <!-- 局部重规划间隔（s） -->
+      <param name="plan_inflation" value="0.5"/> <!-- 规划障碍膨胀半径（m） -->
+      <param name="recovery_timeout" value="20.0"/> <!-- 卡死/异常恢复超时（s） -->
+      <param name="backtrack_dist" value="15.0"/> <!-- 遇阻回退距离（m） -->
+      <param name="transfer_dist" value="9999.0"/> <!-- 转移飞行判定距离（m） -->
+      <param name="plan_clear_radius" value="6.0"/> <!-- 规划路径周边清理半径（m） -->
+      <param name="robot_radius" value="0.35"/> <!-- 机器人碰撞半径（m） -->
+      <param name="mppi_robot_radius" value="0.35"/>
+      <!-- ROAD 阶段调参（速度下限/方向滤波/分支滞回/ROAD-MPPI 代价/诊断），见 config/area_mission_road.yaml -->
+      <rosparam file="$(find auto_explore)/config/area_mission_road.yaml" command="load"/>
+    </node>
+  </group>
+
+  <!-- ===== typhoon_h480_2: road_x_1(y=-45) ===== -->
+  <group ns="typhoon_h480_2" if="$(eval int(arg('num_drones')) >= 3)">
+    <node pkg="auto_explore" type="scan_self_filter_node" name="scan_self_filter" output="screen">
+      <param name="scan_topic" value="/typhoon_h480_2/scan"/> <!-- 输入：该机原始 2D 激光话题 -->
+      <param name="scan_filtered_topic" value="/typhoon_h480_2/scan_filtered"/> <!-- 输出：剔除自身点云后的激光话题 -->
+      <param name="pose_topic" value="/typhoon_h480_2/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cut_radius" value="$(arg cut_radius)"/> <!-- 自滤波切除半径：激光点距机身小于该值则剔除（m） -->
+      <param name="laser_z_offset" value="0.6"/> <!-- 激光雷达相对 base_link 的安装高度（m） -->
+      <param name="ground_alt_offset" value="1.0"/> <!-- 地面高度补偿：高于此高度的点保留（m） -->
+      <param name="ground_margin" value="0.8"/> <!-- 地面点过滤余量：防止地面点被误当障碍（m） -->
+    </node>
+    <node pkg="auto_explore" type="road_follow_gpu.sh" name="road_follow" output="screen">
+      <param name="vehicle" value="typhoon_h480_2"/>
+      <param name="disable_for_vehicle" value="true"/>
+      <param name="image_topic" value="/typhoon_h480_2/realsense/depth_camera/color/image_raw"/>
+      <param name="output_topic" value="/typhoon_h480_2/road_follow/steering"/>
+      <param name="candidates_topic" value="/typhoon_h480_2/road_follow/candidates"/>
+      <param name="debug_topic" value="/typhoon_h480_2/road_follow/debug_image"/>
+      <param name="publish_debug" value="true"/>
+      <param name="road_model" value="$(arg road_model)"/>
+      <param name="road_class" value="$(arg road_class)"/>
+      <param name="infer_imgsz" value="$(arg infer_imgsz)"/>
+      <param name="infer_conf" value="$(arg infer_conf)"/>
+      <param name="infer_iou" value="$(arg infer_iou)"/>
+      <param name="infer_device" value="$(arg infer_device)"/>
+      <param name="infer_max_det" value="$(arg infer_max_det)"/>
+      <param name="hold_seconds" value="1.2"/>
+    </node>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_laser_tf"
+          args="0 0 0.6 0 0 0 base_link_2 laser_2d_2 40"/> <!-- 发布 base_link_2 -> laser_2d_2 静态 TF：激光装在机体上方 0.6m，周期 40ms -->
+    <node pkg="auto_explore" type="odom_broadcaster_node" name="odom_broadcaster" output="screen">
+      <param name="pose_topic" value="/typhoon_h480_2/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="parent_frame" value="odom_2"/> <!-- 里程计父坐标系（odom_{id}） -->
+      <param name="child_frame" value="base_link_2"/> <!-- 里程计子坐标系（base_link_{id}） -->
+    </node>
+    <node pkg="auto_explore" type="area_mission_node" name="area_mission_node" output="screen">
+      <param name="vehicle" value="typhoon_h480_2"/> <!-- 本节点控制的无人机完整命名空间 -->
+      <param name="spawn_origin_x" value="$(arg spawn_origin_x)"/> <!-- 环境适配层：出生点布局 -->
+      <param name="spawn_origin_y" value="$(arg spawn_origin_y)"/>
+      <param name="spawn_stride_x" value="$(arg spawn_stride_x)"/>
+      <param name="spawn_stride_y" value="$(arg spawn_stride_y)"/>
+      <param name="direct_goal_mode" value="true"/>
+      <param name="scan_topic" value="/typhoon_h480_2/scan_filtered"/> <!-- 用于探索的过滤后激光话题 -->
+      <param name="map_topic" value="$(arg map_topic)"/> <!-- 订阅的全局共享地图话题 -->
+      <param name="pose_topic" value="/typhoon_h480_2/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cmd_vel_topic" value="/typhoon_h480_2/mux_inputs/navigator/cmd_vel"/> <!-- MUX navigator 通道的速度指令话题（自主导航输出） -->
+      <param name="cmd_topic" value="/xtdrone/typhoon_h480_2/cmd"/> <!-- XTDrone 统一命令话题 -->
+      <param name="control_rate" value="20.0"/> <!-- S13: 控制循环 50→20 Hz 减负，baro/pose 不会被高负载压制 -->
+      <param name="manual_unknown_as_obstacle" value="true"/> <!-- 是否把未知栅格当作障碍物处理 -->
+      <param name="map_frame" value="$(arg map_frame)"/> <!-- 全局地图坐标系 -->
+      <param name="base_frame" value="base_link_2"/> <!-- 机体坐标系（base_link_{id}） -->
+      <param name="odom_frame" value="odom_2"/> <!-- 里程计坐标系（odom_{id}） -->
+      <param name="target_altitude" value="$(arg target_altitude)"/> <!-- 探索巡航目标高度（m） -->
+      <param name="transfer_altitude" value="$(arg transfer_altitude)"/> <!-- 航点间转移飞行高度（m） -->
+      <param name="wp_reach_tolerance" value="3.0"/>
+      <param name="patrol_skip_enabled" value="false"/> <!-- 只在到达航点后推进队列 -->
+      <param name="sensor_timeout" value="0.5"/>
+      <param name="pose_timeout" value="0.5"/>
+      <param name="pose_stale_recovery_timeout" value="2.0"/>
+      <param name="pose_stale_recovery_speed" value="0.6"/>
+      <param name="region_margin" value="6.0"/>
+      <param name="patrol_spacing" value="5.0"/> <!-- 旧参数（已废弃，仅保留兼容；巡逻环不再用它） -->
+      <param name="patrol_outer_margin" value="2.0"/> <!-- 最外环相对责任区内缩（m，必须 > 1.5m 边界硬保护） -->
+      <param name="patrol_rings" value="4"/> <!-- 巡逻环数（每环 4 点，BL→BR→TR→TL） -->
+      <param name="patrol_ring_ratio" value="0.7"/> <!-- 相邻环比例（等比例中心缩放，保证长宽比不变） -->
+      <param name="patrol_astar_enabled" value="true"/> <!-- /map 上 A* 全局巡逻路径：给反应式 MPPI 提供绕房区的路径 -->
+      <param name="patrol_astar_inflate" value="0.6"/> <!-- A* 障碍膨胀半径（m） -->
+      <param name="patrol_astar_lookahead" value="6.0"/> <!-- MPPI 实际跟随的路径前视点距离（m） -->
+      <param name="patrol_astar_replan" value="1.0"/> <!-- A* 重规划周期（s） -->
+      <param name="front_cone_deg" value="22.0"/> <!-- 深度安全层前方锥半角（度）：锥外深度点不再触发硬停/latch -->
+      <param name="patrol_speed_limit" value="3.5"/>
+      <param name="patrol_turn_speed_cap" value="2.8"/>
+      <!-- 2026-09-24：pocket trap 修复三件套（plan 1+2+3） -->
+      <param name="patrol_retreat_time" value="6.0"/>      <!-- 跳点后朝区域中心退的时长 -->
+      <param name="patrol_hover_skip_blacklist" value="40.0"/> <!-- 2026-09-27：4 航点布局下 120s 太长（一次悬停就丢掉 1/4 航线），降到 40s -->
+      <param name="patrol_wp_blacklist_time" value="60.0"/>      <!-- 2026-09-27：180→60s，配合"全冷却则清空"逻辑 -->
+      <param name="road_topic" value="/typhoon_h480_2/road_follow/steering"/>
+      <param name="road_candidates_topic" value="/typhoon_h480_2/road_follow/candidates"/>
+      <param name="road_confidence_threshold" value="0.25"/>
+      <param name="road_timeout" value="1.0"/>
+      <param name="road_guidance_hold_duration" value="2.0"/>
+      <param name="road_hold_confidence_decay" value="0.65"/>
+      <param name="road_guidance_crawl_speed" value="1.2"/>
+      <param name="road_recovery_speed" value="1.0"/>
+      <param name="road_approach_distance" value="$(arg road_approach_distance)"/>
+      <param name="road_min_speed" value="$(arg road_min_speed)"/>
+      <param name="road_approach_speed" value="$(arg road_approach_speed)"/>
+      <param name="road_target_approach_speed" value="$(arg road_target_approach_speed)"/>
+      <param name="road_target_reorient_timeout" value="$(arg road_target_reorient_timeout)"/>
+      <param name="road_approach_target_weight" value="0.8"/>
+      <param name="road_approach_prior_weight" value="0.2"/>
+      <param name="road_speed_limit" value="3.5"/>
+      <param name="road_align_distance" value="12.0"/>
+      <param name="road_align_perp_weight" value="0.7"/>
+      <param name="road_geom_only_after_lost" value="1.0"/>
+      <param name="transit_reach_tolerance" value="20.0"/>
+      <param name="transit_speed_limit" value="3.0"/>
+      <param name="transit_astar_max_detour_ratio" value="1.6"/>
+      <param name="transit_road_weight_min" value="0.45"/>
+      <param name="transit_road_weight_max" value="0.75"/>
+      <param name="road_search_yaw_rate" value="0.35"/>
+      <param name="road_accel_limit" value="1.2"/>
+      <param name="road_pitch_limit" value="0.22"/>
+      <param name="obstacle_warn_distance" value="5.0"/>
+      <param name="obstacle_side_safe" value="0.5"/> <!-- 2026-09-27 狭窄通道代价衰减半径：2.5m → 0.5m，使两个房区间的窄缝代价衰减更快 -->
+      <param name="obstacle_turn_rate" value="0.8"/>
+      <param name="near_goal_distance" value="8.0"/>
+      <param name="near_goal_depth" value="2.0"/>
+      <param name="near_goal_confirm_cycles" value="5"/>
+      <param name="descend_dist" value="20.0"/> <!-- 到达目标点前开始下降的距离（m） -->
+      <param name="map_save_path" value="$(arg save_path)_2"/> <!-- 该机探索地图保存路径 -->
+      <param name="road_max_seconds" value="0.0"/> <!-- 2026-09-28：用户要求取消 ROAD 硬时限，故置 0（≤0 = 不限时）；要恢复设回 60/180 -->
+      <param name="max_lin_x" value="5.0"/> <!-- 最大前向线速度（m/s） -->
+      <param name="k_lin" value="1.0"/> <!-- 线速度比例增益 -->
+      <param name="accel_limit" value="2.5"/> <!-- 线加速度限制（m/s^2） -->
+      <param name="min_lin_x" value="2.0"/> <!-- 最低巡航速度（m/s）：非紧急停车状态的前向速度下限 -->
+      <param name="smooth_rate_xyz" value="3.0"/> <!-- 输出速度变化率限制（m/s^2），高速下需同步加大 -->
+      <param name="avoid_dist" value="10.0"/> <!-- 机间避障距离（m） -->
+      <!-- 2026-09-27：MPPI/depth/front_inhibit 权重集中在 src/auto_explore/config/mppi_params.yaml -->
+      <rosparam command="load" file="$(find auto_explore)/config/mppi_params.yaml"/>
+      <param name="max_pose_jump" value="4.0"/>
+      <param name="min_safe_altitude" value="1.0"/>
+      <!-- S10：双向高度控制 + ALT_RECOVER（掉高不再永久停机） -->
+      <param name="alt_climb_deadband" value="0.05"/> <!-- S12: 紧对称：目标 4.5m 时<4.45m 就爬 --> <!-- 之前 0.3 太大，导致 4.5m 起飞后惯性上冲至 5.5m 不收敛 --> <!-- 低于目标 0.3m 就允许爬升 -->
+      <param name="alt_descend_deadband" value="0.05"/> <!-- S12: 目标 4.5m 时>4.55m 就降，锁住高度 --> <!-- 紧死区，>目标 0.05m 即下 -->
+      <param name="climb_rate" value="0.5"/> <!-- 爬升速度上限（m/s） -->
+      <param name="alt_recover_enter_z" value="3.5"/> <!-- 低于该高度进入 ALT_RECOVER（对应 target_altitude=4.5） -->
+      <param name="alt_recover_exit_z" value="4.4"/> <!-- S11: 目标 4.5m 时回到 4.4m 才退 alt_recover，避免回弹 --> <!-- 回到该高度才恢复前向 -->
+      <param name="max_safe_altitude" value="30.0"/> <!-- EKF 高度发散上界（>30m 视为异常并保持） -->
+      <param name="mppi_dt" value="0.10"/> <!-- MPPI 单步时长（s），总前视 H*dt=2.4s -->
+      <param name="mppi_min_v" value="0.3"/> <!-- 2 号专属：保守下限避免 pose 抖动（其他机 0.0） -->
+      <param name="mppi_max_w" value="1.2"/> <!-- MPPI 最大偏航角速度（rad/s） -->
+      <param name="mppi_sigma_v" value="0.8"/> <!-- MPPI 线速度采样噪声标准差 -->
+      <param name="mppi_sigma_w" value="0.6"/> <!-- MPPI 角速度采样噪声标准差 -->
+      <param name="mppi_lambda" value="0.15"/> <!-- MPPI 温度：越小越贪婪 -->
+      <param name="mppi_goal_weight" value="3.0"/> <!-- 2026-09-27 加大航点方向评分器权重：2.2 → 3.0，让 MPPI 偏 waypoint 方向 --> <!-- MPPI 终端目标距离代价权重 -->
+      <param name="mppi_obstacle_weight" value="70.0"/> <!-- MPPI 障碍物接近代价权重（加大，提前绕行） -->
+      <param name="mppi_yaw_weight" value="0.10"/> <!-- 2 号专属：减小偏航避免 pose 抖动（其他机 0.25） -->
+      <param name="mppi_speed_weight" value="0.5"/> <!-- MPPI 速度偏离 v_des 惩罚权重 -->
+      <param name="mppi_field_radius" value="20.0"/> <!-- MPPI 局部障碍距离场半边长（m），覆盖激光 20m 量程 -->
+      <param name="mppi_field_res" value="0.15"/> <!-- MPPI 障碍距离场分辨率（m/格） -->
+      <param name="mppi_safe_radius" value="2.0"/>
+      <param name="mppi_robot_radius" value="0.35"/>
+      <param name="depth_fx" value="205.4696"/>
+      <param name="depth_fy" value="205.4696"/>
+      <param name="depth_cx" value="320.0"/>
+      <param name="depth_cy" value="240.0"/>
+      <param name="depth_extrinsic_x" value="0.0"/>
+      <param name="depth_extrinsic_y" value="0.0"/>
+      <param name="depth_extrinsic_z" value="-0.162"/>
+      <param name="depth_extrinsic_pitch" value="0.5236"/>
+      <param name="depth_extrinsic_mode" value="tf"/> <!-- 2026-09-25：外参优先查 TF(base_link←camera frame)，查不到退回参数化外参 -->
+      <param name="depth_grid_radius" value="8.0"/>
+      <param name="depth_grid_res" value="0.25"/>
+      <param name="depth_cost_cutoff" value="4.0"/>
+      <param name="depth_obstacle_weight" value="40.0"/>
+      <param name="depth_soft_start" value="2.5"/> <!-- 深度软惩罚下界（m）：[soft_start, cutoff] 用线性小代价，允许通过狭窄区 -->
+      <param name="depth_soft_weight" value="3.0"/> <!-- 软惩罚在 depth==soft_start 处的最大值（线性递减到 cutoff 处为 0） -->
+      <param name="road_mppi_depth_cost_cutoff" value="4.0"/>
+      <param name="road_mppi_depth_obstacle_weight" value="20.0"/>
+      <param name="road_mppi_depth_soft_start" value="2.5"/>
+      <param name="road_mppi_depth_soft_weight" value="3.0"/>
+      <param name="front_inhibit_laser_enter" value="1.5"/>
+      <param name="front_inhibit_laser_release" value="2.5"/>
+      <!-- front_inhibit depth thresholds come from mppi_params.yaml -->
+      <param name="depth_stop_threshold" value="1.2"/>
+      <param name="depth_stop_speed_gain" value="0.8"/>
+      <param name="patrol_speed_envelope_range" value="6.0"/>
+      <param name="patrol_speed_envelope_min" value="0.3"/>
+      <param name="depth_obstacle_threshold" value="3.0"/> <!-- 后级深度兜底阈值（m），不参与 MPPI 深度代价 -->
+      <param name="lookahead_dist" value="4.0"/> <!-- 路径跟踪前视距离（m） -->
+      <param name="occupied_thresh" value="50"/> <!-- 占据栅格判定阈值 -->
+      <param name="manual_goal_timeout" value="90.0"/> <!-- 单次目标点超时时间（s） -->
+      <param name="manual_max_yaw_rate" value="0.8"/> <!-- 最大偏航角速度（rad/s） -->
+      <param name="manual_brake_dist" value="10.0"/> <!-- 接近航点时的刹车距离（m） -->
+      <param name="manual_replan_interval" value="0.5"/> <!-- 局部重规划间隔（s） -->
+      <param name="plan_inflation" value="0.5"/> <!-- 规划障碍膨胀半径（m） -->
+      <param name="recovery_timeout" value="20.0"/> <!-- 卡死/异常恢复超时（s） -->
+      <param name="backtrack_dist" value="15.0"/> <!-- 遇阻回退距离（m） -->
+      <param name="transfer_dist" value="9999.0"/> <!-- 转移飞行判定距离（m） -->
+      <param name="plan_clear_radius" value="6.0"/> <!-- 规划路径周边清理半径（m） -->
+      <param name="robot_radius" value="0.35"/> <!-- 机器人碰撞半径（m） -->
+      <param name="mppi_robot_radius" value="0.35"/>
+      <!-- ROAD 阶段调参（速度下限/方向滤波/分支滞回/ROAD-MPPI 代价/诊断），见 config/area_mission_road.yaml -->
+      <rosparam file="$(find auto_explore)/config/area_mission_road.yaml" command="load"/>
+    </node>
+  </group>
+
+  <!-- ===== typhoon_h480_3: sandy+road_y_1 ===== -->
+  <group ns="typhoon_h480_3" if="$(eval int(arg('num_drones')) >= 4)">
+    <node pkg="auto_explore" type="scan_self_filter_node" name="scan_self_filter" output="screen">
+      <param name="scan_topic" value="/typhoon_h480_3/scan"/> <!-- 输入：该机原始 2D 激光话题 -->
+      <param name="scan_filtered_topic" value="/typhoon_h480_3/scan_filtered"/> <!-- 输出：剔除自身点云后的激光话题 -->
+      <param name="pose_topic" value="/typhoon_h480_3/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cut_radius" value="$(arg cut_radius)"/> <!-- 自滤波切除半径：激光点距机身小于该值则剔除（m） -->
+      <param name="laser_z_offset" value="0.6"/> <!-- 激光雷达相对 base_link 的安装高度（m） -->
+      <param name="ground_alt_offset" value="1.0"/> <!-- 地面高度补偿：高于此高度的点保留（m） -->
+      <param name="ground_margin" value="0.8"/> <!-- 地面点过滤余量：防止地面点被误当障碍（m） -->
+    </node>
+    <node pkg="auto_explore" type="road_follow_gpu.sh" name="road_follow" output="screen">
+      <param name="vehicle" value="typhoon_h480_3"/>
+      <param name="image_topic" value="/typhoon_h480_3/realsense/depth_camera/color/image_raw"/>
+      <param name="output_topic" value="/typhoon_h480_3/road_follow/steering"/>
+      <param name="candidates_topic" value="/typhoon_h480_3/road_follow/candidates"/>
+      <param name="debug_topic" value="/typhoon_h480_3/road_follow/debug_image"/>
+      <param name="publish_debug" value="true"/>
+      <param name="road_model" value="$(arg road_model)"/>
+      <param name="road_class" value="$(arg road_class)"/>
+      <param name="infer_imgsz" value="$(arg infer_imgsz)"/>
+      <param name="infer_conf" value="$(arg infer_conf)"/>
+      <param name="infer_iou" value="$(arg infer_iou)"/>
+      <param name="infer_device" value="$(arg infer_device)"/>
+      <param name="infer_max_det" value="$(arg infer_max_det)"/>
+      <param name="hold_seconds" value="1.2"/>
+    </node>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_laser_tf"
+          args="0 0 0.6 0 0 0 base_link_3 laser_2d_3 40"/> <!-- 发布 base_link_3 -> laser_2d_3 静态 TF：激光装在机体上方 0.6m，周期 40ms -->
+    <node pkg="auto_explore" type="odom_broadcaster_node" name="odom_broadcaster" output="screen">
+      <param name="pose_topic" value="/typhoon_h480_3/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="parent_frame" value="odom_3"/> <!-- 里程计父坐标系（odom_{id}） -->
+      <param name="child_frame" value="base_link_3"/> <!-- 里程计子坐标系（base_link_{id}） -->
+    </node>
+    <node pkg="auto_explore" type="area_mission_node" name="area_mission_node" output="screen">
+      <param name="vehicle" value="typhoon_h480_3"/> <!-- 本节点控制的无人机完整命名空间 -->
+      <param name="spawn_origin_x" value="$(arg spawn_origin_x)"/> <!-- 环境适配层：出生点布局 -->
+      <param name="spawn_origin_y" value="$(arg spawn_origin_y)"/>
+      <param name="spawn_stride_x" value="$(arg spawn_stride_x)"/>
+      <param name="spawn_stride_y" value="$(arg spawn_stride_y)"/>
+      <param name="scan_topic" value="/typhoon_h480_3/scan_filtered"/> <!-- 用于探索的过滤后激光话题 -->
+      <param name="map_topic" value="$(arg map_topic)"/> <!-- 订阅的全局共享地图话题 -->
+      <param name="pose_topic" value="/typhoon_h480_3/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cmd_vel_topic" value="/typhoon_h480_3/mux_inputs/navigator/cmd_vel"/> <!-- MUX navigator 通道的速度指令话题（自主导航输出） -->
+      <param name="cmd_topic" value="/xtdrone/typhoon_h480_3/cmd"/> <!-- XTDrone 统一命令话题 -->
+      <param name="control_rate" value="20.0"/> <!-- S13: 控制循环 50→20 Hz 减负，baro/pose 不会被高负载压制 -->
+      <param name="manual_unknown_as_obstacle" value="true"/> <!-- 是否把未知栅格当作障碍物处理 -->
+      <param name="map_frame" value="$(arg map_frame)"/> <!-- 全局地图坐标系 -->
+      <param name="base_frame" value="base_link_3"/> <!-- 机体坐标系（base_link_{id}） -->
+      <param name="odom_frame" value="odom_3"/> <!-- 里程计坐标系（odom_{id}） -->
+      <param name="target_altitude" value="$(arg target_altitude)"/> <!-- 探索巡航目标高度（m） -->
+      <param name="transfer_altitude" value="$(arg transfer_altitude)"/> <!-- 航点间转移飞行高度（m） -->
+      <param name="wp_reach_tolerance" value="3.0"/>
+      <param name="patrol_skip_enabled" value="false"/> <!-- 只在到达航点后推进队列 -->
+      <param name="sensor_timeout" value="0.5"/>
+      <param name="pose_timeout" value="0.5"/>
+      <param name="pose_stale_recovery_timeout" value="2.0"/>
+      <param name="pose_stale_recovery_speed" value="0.6"/>
+      <param name="region_margin" value="6.0"/>
+      <param name="patrol_spacing" value="5.0"/> <!-- 旧参数（已废弃，仅保留兼容；巡逻环不再用它） -->
+      <param name="patrol_outer_margin" value="2.0"/> <!-- 最外环相对责任区内缩（m，必须 > 1.5m 边界硬保护） -->
+      <param name="patrol_rings" value="4"/> <!-- 巡逻环数（每环 4 点，BL→BR→TR→TL） -->
+      <param name="patrol_ring_ratio" value="0.7"/> <!-- 相邻环比例（等比例中心缩放，保证长宽比不变） -->
+      <param name="patrol_astar_enabled" value="true"/> <!-- /map 上 A* 全局巡逻路径：给反应式 MPPI 提供绕房区的路径 -->
+      <param name="patrol_astar_inflate" value="0.6"/> <!-- A* 障碍膨胀半径（m） -->
+      <param name="patrol_astar_lookahead" value="6.0"/> <!-- MPPI 实际跟随的路径前视点距离（m） -->
+      <param name="patrol_astar_replan" value="1.0"/> <!-- A* 重规划周期（s） -->
+      <param name="front_cone_deg" value="22.0"/> <!-- 深度安全层前方锥半角（度）：锥外深度点不再触发硬停/latch -->
+      <param name="patrol_speed_limit" value="3.5"/>
+      <param name="patrol_turn_speed_cap" value="2.8"/>
+      <!-- 2026-09-24：pocket trap 修复三件套（plan 1+2+3） -->
+      <param name="patrol_retreat_time" value="6.0"/>      <!-- 跳点后朝区域中心退的时长 -->
+      <param name="patrol_hover_skip_blacklist" value="40.0"/> <!-- 2026-09-27：4 航点布局下 120s 太长（一次悬停就丢掉 1/4 航线），降到 40s -->
+      <param name="patrol_wp_blacklist_time" value="60.0"/>      <!-- 2026-09-27：180→60s，配合"全冷却则清空"逻辑 -->
+      <param name="road_topic" value="/typhoon_h480_3/road_follow/steering"/>
+      <param name="road_candidates_topic" value="/typhoon_h480_3/road_follow/candidates"/>
+      <param name="road_confidence_threshold" value="0.25"/>
+      <param name="road_timeout" value="1.0"/>
+      <param name="road_guidance_hold_duration" value="2.0"/>
+      <param name="road_hold_confidence_decay" value="0.65"/>
+      <param name="road_guidance_crawl_speed" value="1.2"/>
+      <param name="road_recovery_speed" value="1.0"/>
+      <param name="road_approach_distance" value="$(arg road_approach_distance)"/>
+      <param name="road_min_speed" value="$(arg road_min_speed)"/>
+      <param name="road_approach_speed" value="$(arg road_approach_speed)"/>
+      <param name="road_target_approach_speed" value="$(arg road_target_approach_speed)"/>
+      <param name="road_target_reorient_timeout" value="$(arg road_target_reorient_timeout)"/>
+      <param name="road_approach_target_weight" value="0.8"/>
+      <param name="road_approach_prior_weight" value="0.2"/>
+      <param name="road_speed_limit" value="3.5"/>
+      <param name="road_align_distance" value="12.0"/>
+      <param name="road_align_perp_weight" value="0.7"/>
+      <param name="road_geom_only_after_lost" value="1.0"/>
+      <param name="transit_reach_tolerance" value="20.0"/>
+      <param name="transit_speed_limit" value="3.0"/>
+      <param name="transit_astar_max_detour_ratio" value="1.6"/>
+      <param name="transit_road_weight_min" value="0.45"/>
+      <param name="transit_road_weight_max" value="0.75"/>
+      <param name="road_search_yaw_rate" value="0.35"/>
+      <param name="road_accel_limit" value="1.2"/>
+      <param name="road_pitch_limit" value="0.22"/>
+      <param name="obstacle_warn_distance" value="5.0"/>
+      <param name="obstacle_side_safe" value="0.5"/> <!-- 2026-09-27 狭窄通道代价衰减半径：2.5m → 0.5m，使两个房区间的窄缝代价衰减更快 -->
+      <param name="obstacle_turn_rate" value="0.8"/>
+      <param name="near_goal_distance" value="8.0"/>
+      <param name="near_goal_depth" value="2.0"/>
+      <param name="near_goal_confirm_cycles" value="5"/>
+      <param name="descend_dist" value="20.0"/> <!-- 到达目标点前开始下降的距离（m） -->
+      <param name="map_save_path" value="$(arg save_path)_3"/> <!-- 该机探索地图保存路径 -->
+      <param name="road_max_seconds" value="0.0"/> <!-- 2026-09-28：用户要求取消 ROAD 硬时限，故置 0（≤0 = 不限时）；要恢复设回 60/180 -->
+      <param name="max_lin_x" value="5.0"/> <!-- 最大前向线速度（m/s） -->
+      <param name="k_lin" value="1.0"/> <!-- 线速度比例增益 -->
+      <param name="accel_limit" value="2.5"/> <!-- 线加速度限制（m/s^2） -->
+      <param name="min_lin_x" value="2.0"/> <!-- 最低巡航速度（m/s）：非紧急停车状态的前向速度下限 -->
+      <param name="smooth_rate_xyz" value="3.0"/> <!-- 输出速度变化率限制（m/s^2），高速下需同步加大 -->
+      <param name="avoid_dist" value="10.0"/> <!-- 机间避障距离（m） -->
+      <!-- 2026-09-27：MPPI/深度/front_inhibit 权重集中在 src/auto_explore/config/mppi_params.yaml
+           改完 yaml 后重新 rosparam load 或调用 ~/reload_mppi_params 服务即可生效。 -->
+      <rosparam command="load" file="$(find auto_explore)/config/mppi_params.yaml"/>
+      <param name="max_pose_jump" value="4.0"/>
+      <param name="min_safe_altitude" value="1.0"/>
+      <!-- S10：双向高度控制 + ALT_RECOVER（掉高不再永久停机） -->
+      <param name="alt_climb_deadband" value="0.05"/> <!-- S12: 紧对称：目标 4.5m 时<4.45m 就爬 --> <!-- 之前 0.3 太大，导致 4.5m 起飞后惯性上冲至 5.5m 不收敛 --> <!-- 低于目标 0.3m 就允许爬升 -->
+      <param name="alt_descend_deadband" value="0.05"/> <!-- S12: 目标 4.5m 时>4.55m 就降，锁住高度 --> <!-- 紧死区，>目标 0.05m 即下 -->
+      <param name="climb_rate" value="0.5"/> <!-- 爬升速度上限（m/s） -->
+      <param name="alt_recover_enter_z" value="3.5"/> <!-- 低于该高度进入 ALT_RECOVER（对应 target_altitude=4.5） -->
+      <param name="alt_recover_exit_z" value="4.4"/> <!-- S11: 目标 4.5m 时回到 4.4m 才退 alt_recover，避免回弹 --> <!-- 回到该高度才恢复前向 -->
+      <param name="max_safe_altitude" value="30.0"/> <!-- EKF 高度发散上界（>30m 视为异常并保持） -->
+      <!-- 相机内参/外参（realsense 320×240 标定）——不放在 yaml 中，保持每机独立可覆盖 -->
+      <param name="depth_fx" value="205.4696"/>
+      <param name="depth_fy" value="205.4696"/>
+      <param name="depth_cx" value="320.0"/>
+      <param name="depth_cy" value="240.0"/>
+      <param name="depth_extrinsic_x" value="0.0"/>
+      <param name="depth_extrinsic_y" value="0.0"/>
+      <param name="depth_extrinsic_z" value="-0.162"/>
+      <param name="depth_extrinsic_pitch" value="0.5236"/>
+      <param name="depth_extrinsic_mode" value="tf"/> <!-- 2026-09-25：外参优先查 TF(base_link←camera frame)，查不到退回参数化外参 -->
+      <param name="patrol_speed_envelope_range" value="6.0"/>
+      <param name="patrol_speed_envelope_min" value="0.3"/>
+      <param name="lookahead_dist" value="4.0"/> <!-- 路径跟踪前视距离（m） -->
+      <param name="occupied_thresh" value="50"/> <!-- 占据栅格判定阈值 -->
+      <param name="manual_goal_timeout" value="90.0"/> <!-- 单次目标点超时时间（s） -->
+      <param name="manual_max_yaw_rate" value="0.8"/> <!-- 最大偏航角速度（rad/s） -->
+      <param name="manual_brake_dist" value="10.0"/> <!-- 接近航点时的刹车距离（m） -->
+      <param name="manual_replan_interval" value="0.5"/> <!-- 局部重规划间隔（s） -->
+      <param name="plan_inflation" value="0.5"/> <!-- 规划障碍膨胀半径（m） -->
+      <param name="recovery_timeout" value="20.0"/> <!-- 卡死/异常恢复超时（s） -->
+      <param name="backtrack_dist" value="15.0"/> <!-- 遇阻回退距离（m） -->
+      <param name="transfer_dist" value="9999.0"/> <!-- 转移飞行判定距离（m） -->
+      <param name="plan_clear_radius" value="6.0"/> <!-- 规划路径周边清理半径（m） -->
+      <param name="robot_radius" value="0.35"/> <!-- 机器人碰撞半径（m） -->
+      <param name="mppi_robot_radius" value="0.35"/>
+      <param name="mppi_robot_radius" value="0.35"/>
+      <!-- ROAD 阶段调参（速度下限/方向滤波/分支滞回/ROAD-MPPI 代价/诊断），见 config/area_mission_road.yaml -->
+      <rosparam file="$(find auto_explore)/config/area_mission_road.yaml" command="load"/>
+    </node>
+  </group>
+
+  <!-- ===== typhoon_h480_4: road_y_2+road_y_3 ===== -->
+  <group ns="typhoon_h480_4" if="$(eval int(arg('num_drones')) >= 5)">
+    <node pkg="auto_explore" type="scan_self_filter_node" name="scan_self_filter" output="screen">
+      <param name="scan_topic" value="/typhoon_h480_4/scan"/> <!-- 输入：该机原始 2D 激光话题 -->
+      <param name="scan_filtered_topic" value="/typhoon_h480_4/scan_filtered"/> <!-- 输出：剔除自身点云后的激光话题 -->
+      <param name="pose_topic" value="/typhoon_h480_4/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cut_radius" value="$(arg cut_radius)"/> <!-- 自滤波切除半径：激光点距机身小于该值则剔除（m） -->
+      <param name="laser_z_offset" value="0.6"/> <!-- 激光雷达相对 base_link 的安装高度（m） -->
+      <param name="ground_alt_offset" value="1.0"/> <!-- 地面高度补偿：高于此高度的点保留（m） -->
+      <param name="ground_margin" value="0.8"/> <!-- 地面点过滤余量：防止地面点被误当障碍（m） -->
+    </node>
+    <node pkg="auto_explore" type="road_follow_gpu.sh" name="road_follow" output="screen">
+      <param name="vehicle" value="typhoon_h480_4"/>
+      <param name="image_topic" value="/typhoon_h480_4/realsense/depth_camera/color/image_raw"/>
+      <param name="output_topic" value="/typhoon_h480_4/road_follow/steering"/>
+      <param name="candidates_topic" value="/typhoon_h480_4/road_follow/candidates"/>
+      <param name="debug_topic" value="/typhoon_h480_4/road_follow/debug_image"/>
+      <param name="publish_debug" value="true"/>
+      <param name="road_model" value="$(arg road_model)"/>
+      <param name="road_class" value="$(arg road_class)"/>
+      <param name="infer_imgsz" value="$(arg infer_imgsz)"/>
+      <param name="infer_conf" value="$(arg infer_conf)"/>
+      <param name="infer_iou" value="$(arg infer_iou)"/>
+      <param name="infer_device" value="$(arg infer_device)"/>
+      <param name="infer_max_det" value="$(arg infer_max_det)"/>
+      <param name="hold_seconds" value="1.2"/>
+    </node>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_laser_tf"
+          args="0 0 0.6 0 0 0 base_link_4 laser_2d_4 40"/> <!-- 发布 base_link_4 -> laser_2d_4 静态 TF：激光装在机体上方 0.6m，周期 40ms -->
+    <node pkg="auto_explore" type="odom_broadcaster_node" name="odom_broadcaster" output="screen">
+      <param name="pose_topic" value="/typhoon_h480_4/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="parent_frame" value="odom_4"/> <!-- 里程计父坐标系（odom_{id}） -->
+      <param name="child_frame" value="base_link_4"/> <!-- 里程计子坐标系（base_link_{id}） -->
+    </node>
+    <node pkg="auto_explore" type="area_mission_node" name="area_mission_node" output="screen">
+      <param name="vehicle" value="typhoon_h480_4"/> <!-- 本节点控制的无人机完整命名空间 -->
+      <param name="spawn_origin_x" value="$(arg spawn_origin_x)"/> <!-- 环境适配层：出生点布局 -->
+      <param name="spawn_origin_y" value="$(arg spawn_origin_y)"/>
+      <param name="spawn_stride_x" value="$(arg spawn_stride_x)"/>
+      <param name="spawn_stride_y" value="$(arg spawn_stride_y)"/>
+      <param name="scan_topic" value="/typhoon_h480_4/scan_filtered"/> <!-- 用于探索的过滤后激光话题 -->
+      <param name="map_topic" value="$(arg map_topic)"/> <!-- 订阅的全局共享地图话题 -->
+      <param name="pose_topic" value="/typhoon_h480_4/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cmd_vel_topic" value="/typhoon_h480_4/mux_inputs/navigator/cmd_vel"/> <!-- MUX navigator 通道的速度指令话题（自主导航输出） -->
+      <param name="cmd_topic" value="/xtdrone/typhoon_h480_4/cmd"/> <!-- XTDrone 统一命令话题 -->
+      <param name="control_rate" value="20.0"/> <!-- S13: 控制循环 50→20 Hz 减负，baro/pose 不会被高负载压制 -->
+      <param name="manual_unknown_as_obstacle" value="true"/> <!-- 是否把未知栅格当作障碍物处理 -->
+      <param name="map_frame" value="$(arg map_frame)"/> <!-- 全局地图坐标系 -->
+      <param name="base_frame" value="base_link_4"/> <!-- 机体坐标系（base_link_{id}） -->
+      <param name="odom_frame" value="odom_4"/> <!-- 里程计坐标系（odom_{id}） -->
+      <param name="target_altitude" value="$(arg target_altitude)"/> <!-- 探索巡航目标高度（m） -->
+      <param name="transfer_altitude" value="$(arg transfer_altitude)"/> <!-- 航点间转移飞行高度（m） -->
+      <param name="wp_reach_tolerance" value="3.0"/>
+      <param name="patrol_skip_enabled" value="false"/> <!-- 只在到达航点后推进队列 -->
+      <param name="sensor_timeout" value="0.5"/>
+      <param name="pose_timeout" value="0.5"/>
+      <param name="pose_stale_recovery_timeout" value="2.0"/>
+      <param name="pose_stale_recovery_speed" value="0.6"/>
+      <param name="region_margin" value="6.0"/>
+      <param name="patrol_spacing" value="5.0"/> <!-- 旧参数（已废弃，仅保留兼容；巡逻环不再用它） -->
+      <param name="patrol_outer_margin" value="2.0"/> <!-- 最外环相对责任区内缩（m，必须 > 1.5m 边界硬保护） -->
+      <param name="patrol_rings" value="4"/> <!-- 巡逻环数（每环 4 点，BL→BR→TR→TL） -->
+      <param name="patrol_ring_ratio" value="0.7"/> <!-- 相邻环比例（等比例中心缩放，保证长宽比不变） -->
+      <param name="patrol_astar_enabled" value="true"/> <!-- /map 上 A* 全局巡逻路径：给反应式 MPPI 提供绕房区的路径 -->
+      <param name="patrol_astar_inflate" value="0.6"/> <!-- A* 障碍膨胀半径（m） -->
+      <param name="patrol_astar_lookahead" value="6.0"/> <!-- MPPI 实际跟随的路径前视点距离（m） -->
+      <param name="patrol_astar_replan" value="1.0"/> <!-- A* 重规划周期（s） -->
+      <param name="front_cone_deg" value="22.0"/> <!-- 深度安全层前方锥半角（度）：锥外深度点不再触发硬停/latch -->
+      <param name="patrol_speed_limit" value="3.5"/>
+      <param name="patrol_turn_speed_cap" value="2.8"/>
+      <!-- 2026-09-24：pocket trap 修复三件套（plan 1+2+3） -->
+      <param name="patrol_retreat_time" value="6.0"/>      <!-- 跳点后朝区域中心退的时长 -->
+      <param name="patrol_hover_skip_blacklist" value="40.0"/> <!-- 2026-09-27：4 航点布局下 120s 太长（一次悬停就丢掉 1/4 航线），降到 40s -->
+      <param name="patrol_wp_blacklist_time" value="60.0"/>      <!-- 2026-09-27：180→60s，配合"全冷却则清空"逻辑 -->
+      <param name="road_topic" value="/typhoon_h480_4/road_follow/steering"/>
+      <param name="road_candidates_topic" value="/typhoon_h480_4/road_follow/candidates"/>
+      <param name="road_confidence_threshold" value="0.25"/>
+      <param name="road_timeout" value="1.0"/>
+      <param name="road_guidance_hold_duration" value="2.0"/>
+      <param name="road_hold_confidence_decay" value="0.65"/>
+      <param name="road_guidance_crawl_speed" value="1.2"/>
+      <param name="road_recovery_speed" value="1.0"/>
+      <param name="road_approach_distance" value="$(arg road_approach_distance)"/>
+      <param name="road_min_speed" value="$(arg road_min_speed)"/>
+      <param name="road_approach_speed" value="$(arg road_approach_speed)"/>
+      <param name="road_target_approach_speed" value="$(arg road_target_approach_speed)"/>
+      <param name="road_target_reorient_timeout" value="$(arg road_target_reorient_timeout)"/>
+      <param name="road_approach_target_weight" value="0.8"/>
+      <param name="road_approach_prior_weight" value="0.2"/>
+      <param name="road_speed_limit" value="3.5"/>
+      <param name="road_align_distance" value="12.0"/>
+      <param name="road_align_perp_weight" value="0.7"/>
+      <param name="road_geom_only_after_lost" value="1.0"/>
+      <param name="transit_reach_tolerance" value="20.0"/>
+      <param name="transit_speed_limit" value="3.5"/>
+      <param name="transit_astar_max_detour_ratio" value="1.6"/>
+      <param name="transit_road_weight_min" value="0.45"/>
+      <param name="transit_road_weight_max" value="0.75"/>
+      <param name="road_search_yaw_rate" value="0.35"/>
+      <param name="road_accel_limit" value="1.2"/>
+      <param name="road_pitch_limit" value="0.22"/>
+      <param name="obstacle_warn_distance" value="5.0"/>
+      <param name="obstacle_side_safe" value="0.5"/> <!-- 2026-09-27 狭窄通道代价衰减半径：2.5m → 0.5m，使两个房区间的窄缝代价衰减更快 -->
+      <param name="obstacle_turn_rate" value="0.8"/>
+      <param name="near_goal_distance" value="8.0"/>
+      <param name="near_goal_depth" value="2.0"/>
+      <param name="near_goal_confirm_cycles" value="5"/>
+      <param name="descend_dist" value="20.0"/> <!-- 到达目标点前开始下降的距离（m） -->
+      <param name="map_save_path" value="$(arg save_path)_4"/> <!-- 该机探索地图保存路径 -->
+      <param name="road_full_align_uav_set" value="16"/> <!-- UAV4 启用 ROAD 全阶段沿路引导（bit4） -->
+      <param name="near_goal_strict_depth" value="true"/> <!-- UAV4 接近段只看距离，深度跳变不卡 -->
+      <param name="near_goal_dwell_seconds" value="3.0"/> <!-- 接近段累计 3s 进入 PATROL -->
+      <param name="road_max_seconds" value="0.0"/> <!-- 2026-09-28：用户要求取消 ROAD 硬时限，故置 0（≤0 = 不限时）；要恢复设回 60/180（原 UAV4=180） -->
+      <param name="road_full_align_prior_weight" value="0.6"/> <!-- 沿路权重（0.6）-->
+      <param name="road_full_align_target_weight" value="0.4"/> <!-- 几何目标权重（0.4）-->
+      <param name="max_lin_x" value="5.0"/> <!-- 最大前向线速度（m/s） -->
+      <param name="k_lin" value="1.0"/> <!-- 线速度比例增益 -->
+      <param name="accel_limit" value="2.5"/> <!-- 线加速度限制（m/s^2） -->
+      <param name="min_lin_x" value="2.0"/> <!-- 最低巡航速度（m/s）：非紧急停车状态的前向速度下限 -->
+      <param name="smooth_rate_xyz" value="3.0"/> <!-- 输出速度变化率限制（m/s^2），高速下需同步加大 -->
+      <param name="avoid_dist" value="10.0"/> <!-- 机间避障距离（m） -->
+      <!-- 2026-09-27：MPPI/深度/front_inhibit 权重集中在 src/auto_explore/config/mppi_params.yaml
+           改完 yaml 后重新 rosparam load 或调用 ~/reload_mppi_params 服务即可生效。 -->
+      <rosparam command="load" file="$(find auto_explore)/config/mppi_params.yaml"/>
+      <param name="max_pose_jump" value="4.0"/>
+      <param name="min_safe_altitude" value="1.0"/>
+      <!-- S10：双向高度控制 + ALT_RECOVER（掉高不再永久停机） -->
+      <param name="alt_climb_deadband" value="0.05"/> <!-- S12: 紧对称：目标 4.5m 时<4.45m 就爬 --> <!-- 之前 0.3 太大，导致 4.5m 起飞后惯性上冲至 5.5m 不收敛 --> <!-- 低于目标 0.3m 就允许爬升 -->
+      <param name="alt_descend_deadband" value="0.05"/> <!-- S12: 目标 4.5m 时>4.55m 就降，锁住高度 --> <!-- 紧死区，>目标 0.05m 即下 -->
+      <param name="climb_rate" value="0.5"/> <!-- 爬升速度上限（m/s） -->
+      <param name="alt_recover_enter_z" value="3.5"/> <!-- 低于该高度进入 ALT_RECOVER（对应 target_altitude=4.5） -->
+      <param name="alt_recover_exit_z" value="4.4"/> <!-- S11: 目标 4.5m 时回到 4.4m 才退 alt_recover，避免回弹 --> <!-- 回到该高度才恢复前向 -->
+      <param name="max_safe_altitude" value="30.0"/> <!-- EKF 高度发散上界（>30m 视为异常并保持） -->
+      <!-- 相机内参/外参（realsense 320×240 标定）——不放在 yaml 中，保持每机独立可覆盖 -->
+      <param name="depth_fx" value="205.4696"/>
+      <param name="depth_fy" value="205.4696"/>
+      <param name="depth_cx" value="320.0"/>
+      <param name="depth_cy" value="240.0"/>
+      <param name="depth_extrinsic_x" value="0.0"/>
+      <param name="depth_extrinsic_y" value="0.0"/>
+      <param name="depth_extrinsic_z" value="-0.162"/>
+      <param name="depth_extrinsic_pitch" value="0.5236"/>
+      <param name="depth_extrinsic_mode" value="tf"/> <!-- 2026-09-25：外参优先查 TF(base_link←camera frame)，查不到退回参数化外参 -->
+      <param name="patrol_speed_envelope_range" value="6.0"/>
+      <param name="patrol_speed_envelope_min" value="0.3"/>
+      <param name="lookahead_dist" value="4.0"/> <!-- 路径跟踪前视距离（m） -->
+      <param name="occupied_thresh" value="50"/> <!-- 占据栅格判定阈值 -->
+      <param name="manual_goal_timeout" value="90.0"/> <!-- 单次目标点超时时间（s） -->
+      <param name="manual_max_yaw_rate" value="0.8"/> <!-- 最大偏航角速度（rad/s） -->
+      <param name="manual_brake_dist" value="10.0"/> <!-- 接近航点时的刹车距离（m） -->
+      <param name="manual_replan_interval" value="0.5"/> <!-- 局部重规划间隔（s） -->
+      <param name="plan_inflation" value="0.5"/> <!-- 规划障碍膨胀半径（m） -->
+      <param name="recovery_timeout" value="20.0"/> <!-- 卡死/异常恢复超时（s） -->
+      <param name="backtrack_dist" value="15.0"/> <!-- 遇阻回退距离（m） -->
+      <param name="transfer_dist" value="9999.0"/> <!-- 转移飞行判定距离（m） -->
+      <param name="plan_clear_radius" value="6.0"/> <!-- 规划路径周边清理半径（m） -->
+      <param name="robot_radius" value="0.35"/> <!-- 机器人碰撞半径（m） -->
+      <param name="mppi_robot_radius" value="0.35"/>
+      <!-- ROAD 阶段调参（速度下限/方向滤波/分支滞回/ROAD-MPPI 代价/诊断），见 config/area_mission_road.yaml -->
+      <rosparam file="$(find auto_explore)/config/area_mission_road.yaml" command="load"/>
+    </node>
+  </group>
+
+  <!-- ===== typhoon_h480_5: road_y_4+road_y_5 ===== -->
+  <group ns="typhoon_h480_5" if="$(eval int(arg('num_drones')) >= 6)">
+    <node pkg="auto_explore" type="scan_self_filter_node" name="scan_self_filter" output="screen">
+      <param name="scan_topic" value="/typhoon_h480_5/scan"/> <!-- 输入：该机原始 2D 激光话题 -->
+      <param name="scan_filtered_topic" value="/typhoon_h480_5/scan_filtered"/> <!-- 输出：剔除自身点云后的激光话题 -->
+      <param name="pose_topic" value="/typhoon_h480_5/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cut_radius" value="$(arg cut_radius)"/> <!-- 自滤波切除半径：激光点距机身小于该值则剔除（m） -->
+      <param name="laser_z_offset" value="0.6"/> <!-- 激光雷达相对 base_link 的安装高度（m） -->
+      <param name="ground_alt_offset" value="1.0"/> <!-- 地面高度补偿：高于此高度的点保留（m） -->
+      <param name="ground_margin" value="0.8"/> <!-- 地面点过滤余量：防止地面点被误当障碍（m） -->
+    </node>
+    <node pkg="auto_explore" type="road_follow_gpu.sh" name="road_follow" output="screen">
+      <param name="vehicle" value="typhoon_h480_5"/>
+      <param name="image_topic" value="/typhoon_h480_5/realsense/depth_camera/color/image_raw"/>
+      <param name="output_topic" value="/typhoon_h480_5/road_follow/steering"/>
+      <param name="candidates_topic" value="/typhoon_h480_5/road_follow/candidates"/>
+      <param name="debug_topic" value="/typhoon_h480_5/road_follow/debug_image"/>
+      <param name="publish_debug" value="true"/>
+      <param name="road_model" value="$(arg road_model)"/>
+      <param name="road_class" value="$(arg road_class)"/>
+      <param name="infer_imgsz" value="$(arg infer_imgsz)"/>
+      <param name="infer_conf" value="$(arg infer_conf)"/>
+      <param name="infer_iou" value="$(arg infer_iou)"/>
+      <param name="infer_device" value="$(arg infer_device)"/>
+      <param name="infer_max_det" value="$(arg infer_max_det)"/>
+      <param name="hold_seconds" value="1.2"/>
+    </node>
+    <node pkg="tf" type="static_transform_publisher" name="base_to_laser_tf"
+          args="0 0 0.6 0 0 0 base_link_5 laser_2d_5 40"/> <!-- 发布 base_link_5 -> laser_2d_5 静态 TF：激光装在机体上方 0.6m，周期 40ms -->
+    <node pkg="auto_explore" type="odom_broadcaster_node" name="odom_broadcaster" output="screen">
+      <param name="pose_topic" value="/typhoon_h480_5/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="parent_frame" value="odom_5"/> <!-- 里程计父坐标系（odom_{id}） -->
+      <param name="child_frame" value="base_link_5"/> <!-- 里程计子坐标系（base_link_{id}） -->
+    </node>
+    <node pkg="auto_explore" type="area_mission_node" name="area_mission_node" output="screen">
+      <param name="vehicle" value="typhoon_h480_5"/> <!-- 本节点控制的无人机完整命名空间 -->
+      <param name="spawn_origin_x" value="$(arg spawn_origin_x)"/> <!-- 环境适配层：出生点布局 -->
+      <param name="spawn_origin_y" value="$(arg spawn_origin_y)"/>
+      <param name="spawn_stride_x" value="$(arg spawn_stride_x)"/>
+      <param name="spawn_stride_y" value="$(arg spawn_stride_y)"/>
+      <param name="scan_topic" value="/typhoon_h480_5/scan_filtered"/> <!-- 用于探索的过滤后激光话题 -->
+      <param name="map_topic" value="$(arg map_topic)"/> <!-- 订阅的全局共享地图话题 -->
+      <param name="pose_topic" value="/typhoon_h480_5/mavros/local_position/pose"/> <!-- 该机当前位姿话题（mavros local_position/pose） -->
+      <param name="cmd_vel_topic" value="/typhoon_h480_5/mux_inputs/navigator/cmd_vel"/> <!-- MUX navigator 通道的速度指令话题（自主导航输出） -->
+      <param name="cmd_topic" value="/xtdrone/typhoon_h480_5/cmd"/> <!-- XTDrone 统一命令话题 -->
+      <param name="control_rate" value="20.0"/> <!-- S13: 控制循环 50→20 Hz 减负，baro/pose 不会被高负载压制 -->
+      <param name="manual_unknown_as_obstacle" value="true"/> <!-- 是否把未知栅格当作障碍物处理 -->
+      <param name="map_frame" value="$(arg map_frame)"/> <!-- 全局地图坐标系 -->
+      <param name="base_frame" value="base_link_5"/> <!-- 机体坐标系（base_link_{id}） -->
+      <param name="odom_frame" value="odom_5"/> <!-- 里程计坐标系（odom_{id}） -->
+      <param name="target_altitude" value="$(arg target_altitude)"/> <!-- 探索巡航目标高度（m） -->
+      <param name="transfer_altitude" value="$(arg transfer_altitude)"/> <!-- 航点间转移飞行高度（m） -->
+      <param name="wp_reach_tolerance" value="3.0"/>
+      <param name="patrol_skip_enabled" value="false"/> <!-- 只在到达航点后推进队列 -->
+      <param name="sensor_timeout" value="0.5"/>
+      <param name="pose_timeout" value="0.5"/>
+      <param name="pose_stale_recovery_timeout" value="2.0"/>
+      <param name="pose_stale_recovery_speed" value="0.6"/>
+      <param name="region_margin" value="6.0"/>
+      <param name="patrol_spacing" value="5.0"/> <!-- 旧参数（已废弃，仅保留兼容；巡逻环不再用它） -->
+      <param name="patrol_outer_margin" value="2.0"/> <!-- 最外环相对责任区内缩（m，必须 > 1.5m 边界硬保护） -->
+      <param name="patrol_rings" value="4"/> <!-- 巡逻环数（每环 4 点，BL→BR→TR→TL） -->
+      <param name="patrol_ring_ratio" value="0.7"/> <!-- 相邻环比例（等比例中心缩放，保证长宽比不变） -->
+      <param name="patrol_astar_enabled" value="true"/> <!-- /map 上 A* 全局巡逻路径：给反应式 MPPI 提供绕房区的路径 -->
+      <param name="patrol_astar_inflate" value="0.6"/> <!-- A* 障碍膨胀半径（m） -->
+      <param name="patrol_astar_lookahead" value="6.0"/> <!-- MPPI 实际跟随的路径前视点距离（m） -->
+      <param name="patrol_astar_replan" value="1.0"/> <!-- A* 重规划周期（s） -->
+      <param name="front_cone_deg" value="22.0"/> <!-- 深度安全层前方锥半角（度）：锥外深度点不再触发硬停/latch -->
+      <param name="patrol_speed_limit" value="3.5"/>
+      <param name="patrol_turn_speed_cap" value="2.8"/>
+      <!-- 2026-09-24：pocket trap 修复三件套（plan 1+2+3） -->
+      <param name="patrol_retreat_time" value="6.0"/>      <!-- 跳点后朝区域中心退的时长 -->
+      <param name="patrol_hover_skip_blacklist" value="40.0"/> <!-- 2026-09-27：4 航点布局下 120s 太长（一次悬停就丢掉 1/4 航线），降到 40s -->
+      <param name="patrol_wp_blacklist_time" value="60.0"/>      <!-- 2026-09-27：180→60s，配合"全冷却则清空"逻辑 -->
+      <param name="road_topic" value="/typhoon_h480_5/road_follow/steering"/>
+      <param name="road_candidates_topic" value="/typhoon_h480_5/road_follow/candidates"/>
+      <param name="road_confidence_threshold" value="0.25"/>
+      <param name="road_timeout" value="1.0"/>
+      <param name="road_guidance_hold_duration" value="2.0"/>
+      <param name="road_hold_confidence_decay" value="0.65"/>
+      <param name="road_guidance_crawl_speed" value="1.2"/>
+      <param name="road_recovery_speed" value="1.0"/>
+      <param name="road_approach_distance" value="$(arg road_approach_distance)"/>
+      <param name="road_min_speed" value="$(arg road_min_speed)"/>
+      <param name="road_approach_speed" value="$(arg road_approach_speed)"/>
+      <param name="road_target_approach_speed" value="$(arg road_target_approach_speed)"/>
+      <param name="road_target_reorient_timeout" value="$(arg road_target_reorient_timeout)"/>
+      <param name="road_approach_target_weight" value="0.8"/>
+      <param name="road_approach_prior_weight" value="0.2"/>
+      <param name="road_speed_limit" value="3.5"/>
+      <param name="road_align_distance" value="12.0"/>
+      <param name="road_align_perp_weight" value="0.7"/>
+      <param name="road_geom_only_after_lost" value="1.0"/>
+      <param name="transit_reach_tolerance" value="20.0"/>
+      <param name="transit_speed_limit" value="3.5"/>
+      <param name="transit_astar_max_detour_ratio" value="1.6"/>
+      <param name="transit_road_weight_min" value="0.45"/>
+      <param name="transit_road_weight_max" value="0.75"/>
+      <param name="road_search_yaw_rate" value="0.35"/>
+      <param name="road_accel_limit" value="1.2"/>
+      <param name="road_pitch_limit" value="0.22"/>
+      <param name="obstacle_warn_distance" value="5.0"/>
+      <param name="obstacle_side_safe" value="0.5"/> <!-- 2026-09-27 狭窄通道代价衰减半径：2.5m → 0.5m，使两个房区间的窄缝代价衰减更快 -->
+      <param name="obstacle_turn_rate" value="0.8"/>
+      <param name="near_goal_distance" value="8.0"/>
+      <param name="near_goal_depth" value="2.0"/>
+      <param name="near_goal_confirm_cycles" value="5"/>
+      <param name="descend_dist" value="20.0"/> <!-- 到达目标点前开始下降的距离（m） -->
+      <param name="map_save_path" value="$(arg save_path)_5"/> <!-- 该机探索地图保存路径 -->
+      <param name="road_full_align_uav_set" value="32"/> <!-- UAV5 启用 ROAD 全阶段沿路引导（bit5） -->
+      <param name="near_goal_strict_depth" value="true"/> <!-- UAV5 接近段只看距离，深度跳变不卡 -->
+      <param name="near_goal_dwell_seconds" value="3.0"/> <!-- 接近段累计 3s 进入 PATROL -->
+      <param name="road_max_seconds" value="0.0"/> <!-- 2026-09-28：用户要求取消 ROAD 硬时限，故置 0（≤0 = 不限时）；要恢复设回 60/180（原 UAV5=60） -->
+      <param name="near_goal_outer_distance" value="15.0"/> <!-- UAV5 进入外圈距离阈值 (15m) -->
+      <param name="near_goal_outer_dwell_seconds" value="2.0"/> <!-- UAV5 外圈累计 2s 进入 PATROL -->
+      <param name="road_full_align_prior_weight" value="0.6"/> <!-- 沿路权重（0.6）-->
+      <param name="road_full_align_target_weight" value="0.4"/> <!-- 几何目标权重（0.4）-->
+      <param name="max_lin_x" value="5.0"/> <!-- 最大前向线速度（m/s） -->
+      <param name="k_lin" value="1.0"/> <!-- 线速度比例增益 -->
+      <param name="accel_limit" value="2.5"/> <!-- 线加速度限制（m/s^2） -->
+      <param name="min_lin_x" value="2.0"/> <!-- 最低巡航速度（m/s）：非紧急停车状态的前向速度下限 -->
+      <param name="smooth_rate_xyz" value="3.0"/> <!-- 输出速度变化率限制（m/s^2），高速下需同步加大 -->
+      <param name="avoid_dist" value="10.0"/> <!-- 机间避障距离（m） -->
+      <!-- 2026-09-27：MPPI/深度/front_inhibit 权重集中在 src/auto_explore/config/mppi_params.yaml
+           改完 yaml 后重新 rosparam load 或调用 ~/reload_mppi_params 服务即可生效。 -->
+      <rosparam command="load" file="$(find auto_explore)/config/mppi_params.yaml"/>
+      <param name="max_pose_jump" value="4.0"/>
+      <param name="min_safe_altitude" value="1.0"/>
+      <!-- S10：双向高度控制 + ALT_RECOVER（掉高不再永久停机） -->
+      <param name="alt_climb_deadband" value="0.05"/> <!-- S12: 紧对称：目标 4.5m 时<4.45m 就爬 --> <!-- 之前 0.3 太大，导致 4.5m 起飞后惯性上冲至 5.5m 不收敛 --> <!-- 低于目标 0.3m 就允许爬升 -->
+      <param name="alt_descend_deadband" value="0.05"/> <!-- S12: 目标 4.5m 时>4.55m 就降，锁住高度 --> <!-- 紧死区，>目标 0.05m 即下 -->
+      <param name="climb_rate" value="0.5"/> <!-- 爬升速度上限（m/s） -->
+      <param name="alt_recover_enter_z" value="3.5"/> <!-- 低于该高度进入 ALT_RECOVER（对应 target_altitude=4.5） -->
+      <param name="alt_recover_exit_z" value="4.4"/> <!-- S11: 目标 4.5m 时回到 4.4m 才退 alt_recover，避免回弹 --> <!-- 回到该高度才恢复前向 -->
+      <param name="max_safe_altitude" value="30.0"/> <!-- EKF 高度发散上界（>30m 视为异常并保持） -->
+      <!-- 相机内参/外参（realsense 320×240 标定）——不放在 yaml 中，保持每机独立可覆盖 -->
+      <param name="depth_fx" value="205.4696"/>
+      <param name="depth_fy" value="205.4696"/>
+      <param name="depth_cx" value="320.0"/>
+      <param name="depth_cy" value="240.0"/>
+      <param name="depth_extrinsic_x" value="0.0"/>
+      <param name="depth_extrinsic_y" value="0.0"/>
+      <param name="depth_extrinsic_z" value="-0.162"/>
+      <param name="depth_extrinsic_pitch" value="0.5236"/>
+      <param name="depth_extrinsic_mode" value="tf"/> <!-- 2026-09-25：外参优先查 TF(base_link←camera frame)，查不到退回参数化外参 -->
+      <param name="patrol_speed_envelope_range" value="6.0"/>
+      <param name="patrol_speed_envelope_min" value="0.3"/>
+      <param name="lookahead_dist" value="4.0"/> <!-- 路径跟踪前视距离（m） -->
+      <param name="occupied_thresh" value="50"/> <!-- 占据栅格判定阈值 -->
+      <param name="manual_goal_timeout" value="90.0"/> <!-- 单次目标点超时时间（s） -->
+      <param name="manual_max_yaw_rate" value="0.8"/> <!-- 最大偏航角速度（rad/s） -->
+      <param name="manual_brake_dist" value="10.0"/> <!-- 接近航点时的刹车距离（m） -->
+      <param name="manual_replan_interval" value="0.5"/> <!-- 局部重规划间隔（s） -->
+      <param name="plan_inflation" value="0.5"/> <!-- 规划障碍膨胀半径（m） -->
+      <param name="recovery_timeout" value="20.0"/> <!-- 卡死/异常恢复超时（s） -->
+      <param name="backtrack_dist" value="15.0"/> <!-- 遇阻回退距离（m） -->
+      <param name="transfer_dist" value="9999.0"/> <!-- 转移飞行判定距离（m） -->
+      <param name="plan_clear_radius" value="6.0"/> <!-- 规划路径周边清理半径（m） -->
+      <param name="robot_radius" value="0.35"/> <!-- 机器人碰撞半径（m） -->
+      <!-- ROAD 阶段调参（速度下限/方向滤波/分支滞回/ROAD-MPPI 代价/诊断），见 config/area_mission_road.yaml -->
+      <rosparam file="$(find auto_explore)/config/area_mission_road.yaml" command="load"/>
+    </node>
+  </group>
+
+  <!-- shared fused map: 6 lidars -> one /map (world frame) -->
+  <node pkg="auto_explore" type="scan_map_fuser_node" name="scan_map_fuser" output="screen">
+    <param name="num_drones" value="$(arg num_drones)"/> <!-- 参与共享地图融合的无人机数量 -->
+    <param name="vehicle_type" value="$(arg vehicle_type)"/> <!-- 无人机名称前缀，用于拼扫描话题 -->
+    <param name="map_frame" value="$(arg map_frame)"/> <!-- 全局地图坐标系 -->
+    <param name="max_range" value="20.0"/> <!-- 激光最大融合距离（m） -->
+    <param name="spawn_origin_x" value="$(arg spawn_origin_x)"/> <!-- 环境适配层：map->odom_i 的平移量 -->
+    <param name="spawn_origin_y" value="$(arg spawn_origin_y)"/>
+    <param name="spawn_stride_x" value="$(arg spawn_stride_x)"/>
+    <param name="spawn_stride_y" value="$(arg spawn_stride_y)"/>
+  </node>
+
+  <node if="$(arg rviz)" pkg="auto_explore" type="launch_rviz.py" name="rviz"
+        args="$(arg vehicle_type) $(find auto_explore)/explore.rviz"/> <!-- RViz 启动参数：车型 + rviz 配置文件路径 -->
+</launch>

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!-- ==========================================================================
+     robocup_judge_gazebo.launch —— 官方链路第 1 段：只起 Gazebo 世界
+     与官方 robocup.launch 的区别：把 "起 gzserver" 和 "spawn 6 架无人机"
+     拆开。原因（2026-10-09 实测）：robocup.world 是一座完整城市，本机加载
+     需要数十秒到数分钟；官方 launch 一口气并发 spawn 6 架，会撞上
+     "spawn service timed out waiting for entity to appear" 而全军覆没。
+     拆开后可以先等世界真正就绪，再逐架拉起。
+     ========================================================================== -->
+<launch>
+  <arg name="world" default="$(find mavlink_sitl_gazebo)/worlds/robocup.world"/>
+  <arg name="gui" default="false"/>
+  <arg name="paused" default="false"/>
+  <arg name="verbose" default="false"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="verbose" value="$(arg verbose)"/>
+  </include>
+</launch>

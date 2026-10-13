@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="world" default="$(find mavlink_sitl_gazebo)/worlds/robocup.world"/>
+    <arg name="gui" default="false"/>
+    <arg name="debug_gazebo" default="false"/>
+
+    <group unless="$(arg debug_gazebo)">
+        <include file="$(find gazebo_ros)/launch/empty_world.launch">
+            <arg name="gui" value="$(arg gui)"/>
+            <arg name="world_name" value="$(arg world)"/>
+            <arg name="paused" value="false"/>
+            <arg name="use_sim_time" value="true"/>
+        </include>
+    </group>
+
+    <group if="$(arg debug_gazebo)">
+        <param name="use_sim_time" value="true"/>
+        <param name="gazebo/enable_ros_network" value="true"/>
+        <node name="gazebo" pkg="gazebo_ros" type="gzserver_gdb_batch"
+              args="-e ode $(arg world)" output="screen"/>
+    </group>
+
+    <group ns="typhoon_h480_0">
+        <include file="$(find px4)/launch/single_vehicle_spawn_xtd.launch">
+            <arg name="x" value="-17"/>
+            <arg name="y" value="-3"/>
+            <arg name="z" value="1"/>
+            <arg name="vehicle" value="typhoon_h480"/>
+            <arg name="sdf" value="typhoon_h480_zzufly"/>
+            <arg name="mavlink_udp_port" value="18570"/>
+            <arg name="mavlink_tcp_port" value="4560"/>
+            <arg name="udp_gimbal_port" value="13030"/>
+            <arg name="ID" value="0"/>
+            <arg name="ID_in_group" value="0"/>
+        </include>
+
+        <include file="$(find mavros)/launch/px4.launch">
+            <arg name="fcu_url" value="udp://:24540@localhost:34580"/>
+            <arg name="gcs_url" value=""/>
+            <arg name="tgt_system" value="1"/>
+            <arg name="tgt_component" value="1"/>
+        </include>
+    </group>
+</launch>

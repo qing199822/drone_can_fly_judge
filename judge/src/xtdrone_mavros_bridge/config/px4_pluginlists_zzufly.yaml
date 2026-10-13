@@ -1,0 +1,23 @@
+plugin_blacklist:
+# common
+- safety_area
+# 2026-09-28 复盘新增：本工程**没有**任何节点往 /typhoon_h480_N/mavros/mocap/pose 发位姿，
+#   而 fake_gps 的默认参数是 use_mocap=True / use_vision=False、geo_origin=苏黎世
+#   (lat 47.3667, lon 8.55, alt 408) —— 它会以一个恒定的"假 GPS"去喂 PX4，
+#   而 PX4 侧 rcS 是 EKF2_AID_MASK=1（GPS 为主）→ 与 SDF 里真实的 model://gps 传感器
+#   形成两路 GPS 打架，是"位置估计以 5~20 m/s 漂移/跳变、高度真值一路爬过 6m"的头号嫌疑。
+#   （mavros_vehicle.launch 里原本想用 /mavros/set_blacklist 服务事后关掉它，但那个服务
+#     在这版 mavros 里不存在：日志 mavros_N.log:299 "Service [.../set_blacklist] is not
+#     available."，所以 fake_gps 一直是 loaded 状态。）
+#   要恢复原行为：把下面这行删掉即可。
+- fake_gps
+# extras
+- image_pub
+- vibration
+- distance_sensor
+- rangefinder
+- wheel_odometry
+
+
+plugin_whitelist: []
+#- 'sys_*'

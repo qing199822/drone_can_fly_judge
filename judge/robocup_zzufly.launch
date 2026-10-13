@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Gazebo + N x Typhoon H480 with PX4 SITL + MAVROS (cluster spawn).
+         Usage: roslaunch robocup_zzufly.launch num_drones:=6 gui:=true
+                world:=/path/to/base0.world -->
+    <arg name="num_drones" default="1"/>
+    <arg name="est" default="ekf2"/>
+    <arg name="world" default="/usr/share/gazebo-11/worlds/empty.world"/>
+    <arg name="gui" default="true"/>
+    <arg name="debug" default="false"/>
+    <arg name="verbose" default="false"/>
+    <arg name="paused" default="false"/>
+    <arg name="px4_airframe" default="typhoon_h480_zzufly"/>
+
+    <!-- Gazebo sim -->
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <arg name="gui" value="$(arg gui)"/>
+        <arg name="world_name" value="$(arg world)"/>
+        <arg name="debug" value="$(arg debug)"/>
+        <arg name="verbose" value="$(arg verbose)"/>
+        <arg name="paused" value="$(arg paused)"/>
+    </include>
+
+    <!-- typhoon_h480_0 .. typhoon_h480_{num_drones-1}, cluster around
+         (-17,-3): 2 x 3 grid, 3 m spacing -->
+    <include file="$(dirname)/spawn_drones.launch">
+        <arg name="num_drones" value="$(arg num_drones)"/>
+        <arg name="drone_id" value="0"/>
+        <arg name="est" value="$(arg est)"/>
+        <arg name="px4_airframe" value="$(arg px4_airframe)"/>
+    </include>
+
+    <!-- XTDrone-compatible control interface for all drones -->
+    <include file="$(find xtdrone_mavros_bridge)/launch/bridge.launch">
+        <arg name="num_drones" value="$(arg num_drones)"/>
+    </include>
+</launch>

@@ -1,0 +1,42 @@
+<launch>
+    <!-- ===================================================================================== -->
+    <!-- ==                            ARGUMENTS (用户接口 & 递归状态)                            == -->
+    <!-- ===================================================================================== -->
+
+    <arg name="num_drones"      doc="要生成的无人机总数"/>
+    <arg name="mission_filename" default="mission.json" doc="json name to option"/>
+    <arg name="mission_file"    default="$(find task_manager)/launch/$(arg mission_filename)" doc="任务文件的路径，默认为本launch文件旁边的mission.json"/>
+    <arg name="drone_prefix"    default="typhoon_h480" doc="无人机名称的前缀"/>
+
+    <!-- 内部状态 -->
+    <arg name="current_index"   default="0" />
+    <arg name="vehicle_ids_so_far" default="" />
+    <!-- 当计数器 'current_index' 小于目标 'num_drones' 时，执行此部分 -->
+    <!-- 修正点 #1: 将 '<' 替换为 '&lt;' -->
+    <group if="$(eval current_index &lt; num_drones)">
+        
+        <arg name="next_index" value="$(eval current_index + 1)"/>
+        <arg name="new_vehicle_ids" value="$(arg vehicle_ids_so_far) $(arg drone_prefix)_$(arg current_index)"/>
+
+        <include file="$(find task_manager)/launch/task.launch">
+            <arg name="num_drones"      value="$(arg num_drones)"/>
+            <arg name="mission_file"    value="$(arg mission_file)"/>
+            <arg name="drone_prefix"    value="$(arg drone_prefix)"/>
+            <arg name="current_index"   value="$(arg next_index)"/>
+            <arg name="vehicle_ids_so_far" value="$(arg new_vehicle_ids)"/>
+        </include>
+    </group>
+
+    <!-- 当计数器 'current_index' 到达 'num_drones' 时，递归结束，执行此部分 -->
+    <!-- 修正点 #2: 将 '<' 替换为 '&lt;' -->
+    <group unless="$(eval current_index &lt; num_drones)">
+        
+        <node name="multi_mission_launcher"
+              pkg="task_manager"
+              type="multi_mission_launcher"
+              args="$(arg mission_file) $(arg vehicle_ids_so_far)"
+              output="screen"
+              required="true"/>
+    </group>
+
+</launch>

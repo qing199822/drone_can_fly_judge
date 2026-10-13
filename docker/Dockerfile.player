@@ -1,0 +1,70 @@
+# ============================================================================
+#  ZZU_FLY 2025 算法栈 —— 选手镜像（对齐官方双机流程：docker + --network host）
+#  构建上下文 = /home/wangtao/robocup_fly （见 build.sh）
+#  关键点：镜像内布局必须是 /root/ZZU_FLY 与 /root/XTDrone —— 因为 2025 的
+#          1.sh/2.sh/3.sh 里写死了 $HOME/ZZU_FLY 和 $HOME/XTDrone/communication
+# ============================================================================
+# Ubuntu 20.04 + ROS Noetic（与官方同版本）
+FROM ros:noetic-robot
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV ROS_MASTER_URI=http://127.0.0.1:11311
+ENV ROS_IP=127.0.0.1
+
+# ---- ① 系统依赖：注意 python-is-python3（坑#1：脚本调 python，20.04 只有 python3）
+# ---- 国内可用镜像：Ubuntu + ROS + PyPI 全部走清华（否则 packages.ros.org 拉不到包）----
+RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list \
+ && echo "deb [trusted=yes] https://mirrors.tuna.tsinghua.edu.cn/ros/ubuntu/ focal main" > /etc/apt/sources.list.d/ros1-latest.list
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python-is-python3 python3-pip python3-dev tmux git nano vim \
+        build-essential cmake \
+        ros-noetic-cv-bridge ros-noetic-tf ros-noetic-tf2-ros ros-noetic-tf2-geometry-msgs \
+        ros-noetic-mavros-msgs \
+        ros-noetic-gazebo-msgs \
+        ros-noetic-image-transport ros-noetic-nav-msgs ros-noetic-geometry-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# ---- ② pip 依赖：pyquaternion 是 XTDrone 通信桥的硬依赖（坑#2，跑起来才发现）
+RUN pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+ && pip3 install --no-cache-dir pyquaternion
+
+# ---- ③ 深度学习依赖：CUDA 版 torch（cu124）+ ultralytics（YOLO11）
+RUN pip3 install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124
+RUN pip3 install --no-cache-dir ultralytics
+
+# ---- ④ 代码：严格按官方/1.sh 期望的布局摆放
+# 只拷算法包；sim 侧包（gazebo_ros_pkgs / gazebo_ros_actor_plugin）由 .dockerignore 排除
+COPY ws2025/src/            /root/ZZU_FLY/src/
+# ---- best.pt：auto_explore 的视觉道路跟随（road_follow.py）权重
+# 路径必须是 /root/ZZU_FLY/best.pt —— auto_explore_swarm.launch 的默认值是
+#   <arg name="road_model" default="$(find auto_explore)/../../best.pt"/>
+# 缺它 road_follow 会直接 IOError 退出（2026-10-13 核实旧镜像缺此项 ✗）
+COPY ws2025/best.pt               /root/ZZU_FLY/best.pt
+COPY ws2025/1.sh ws2025/2.sh ws2025/3.sh ws2025/bp.sh /root/ZZU_FLY/
+COPY ws2025/robocup_zzufly.launch /root/ZZU_FLY/
+COPY ws2025/README.md             /root/ZZU_FLY/
+COPY XTDrone/communication/       /root/XTDrone/communication/
+
+# ---- ⑤ 镜像内编译（不要在宿主机编完再拷 devel：路径/架构更干净）
+# 关键：Docker 的 RUN 默认是 dash，而 ROS 的 setup.bash 需要 bash
+SHELL ["/bin/bash", "-c"]
+# ---- 构建期校验（2026-10-12）：必须放在 SHELL ["/bin/bash","-c"] 之后 ——
+# 之前放在第 ① 步（dash）里，`source`/`.` 都会 127 失败，把镜像构建搞挂两次。
+# 这些 ROS python 包缺失时**构建不会报错**，要到运行期才炸：实测 tf2_geometry_msgs
+# 静默缺失导致解算窗格 bbox2coord_node.py 一启动就 ModuleNotFoundError、上报链整条断掉。
+RUN source /opt/ros/noetic/setup.bash \
+ && python3 -c "import tf2_geometry_msgs, tf, cv_bridge, geometry_msgs, nav_msgs, sensor_msgs; print('OK: ROS python deps present')"
+# catkin build 属于 catkin_tools，基础镜像只带 catkin_make
+RUN apt-get update && apt-get install -y --no-install-recommends python3-catkin-tools pkg-config libjsoncpp-dev \
+ && rm -rf /var/lib/apt/lists/*
+RUN source /opt/ros/noetic/setup.bash && cd /root/ZZU_FLY && catkin init && catkin build -j4
+
+# ---- ⑥ 入口：起容器后可直接 bash 1.sh（或按需手动分窗格）
+RUN printf '#!/bin/bash\nset -e\nsource /opt/ros/noetic/setup.bash\nsource /root/ZZU_FLY/devel/setup.bash\nexport PATH=/root/.local/bin:$PATH\nexec "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+WORKDIR /root/ZZU_FLY
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

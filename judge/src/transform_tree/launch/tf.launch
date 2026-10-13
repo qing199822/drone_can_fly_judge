@@ -1,0 +1,62 @@
+    
+<launch>
+
+    <!-- ===================================================================================== -->
+    <!-- ==                              ARGUMENTS (用户接口)                                 == -->
+    <!-- ===================================================================================== -->
+
+    <!-- 
+        必须从命令行提供的参数。
+        示例: roslaunch transform_tree tf.launch num_drones:=6
+    -->
+    <arg name="num_drones" doc="要启动TF广播器的无人机总数"/>
+
+    <!-- 
+        可选参数，如果您的无人机模型不同，可以从命令行覆盖。
+        示例: roslaunch transform_tree tf.launch num_drones:=6 drone_prefix:=iris
+    -->
+    <arg name="drone_prefix" default="typhoon_h480" doc="无人机名称的前缀"/>
+
+    <!-- 内部参数，用于递归计数，请勿从命令行设置。 -->
+    <arg name="drone_id" default="0" />
+
+
+    <!-- ===================================================================================== -->
+    <!-- ==                             RECURSIVE LOGIC BLOCK                               == -->
+    <!-- ===================================================================================== -->
+
+    <!-- 
+        此逻辑块仅在当前 'drone_id' 小于 'num_drones' 时执行。
+        注意: XML中必须使用 '&lt;' 来代替 '<' 符号。
+    -->
+    <group if="$(eval drone_id &lt; num_drones)">
+
+        <!-- 步骤 1: 为当前无人机启动tf_broadcaster_node节点 -->
+        <!-- 
+            - 'pkg' 和 'type' 指向我们在C++中创建的节点。
+            - 'name' 必须是唯一的，所以我们用前缀和ID来命名。
+            - 'args' 传递C++节点 main 函数需要的命令行参数，即无人机的完整命名空间，
+              例如 "typhoon_h480_0"。
+        -->
+        <node pkg="transform_tree"
+              type="tf_broadcaster_node"
+              name="$(arg drone_prefix)_$(arg drone_id)_tf_broadcaster"
+              args="$(arg drone_prefix)_$(arg drone_id)"
+              output="screen"
+              respawn="true"/>
+
+        <!-- 步骤 2: 递归调用此launch文件本身，但将 drone_id 加 1 -->
+        <include file="$(find transform_tree)/launch/tf.launch">
+            <!-- 将所有需要的参数传递给下一次调用 -->
+            <arg name="num_drones"   value="$(arg num_drones)" />
+            <arg name="drone_prefix" value="$(arg drone_prefix)" />
+            <!-- 核心：将计数器加一 -->
+            <arg name="drone_id"     value="$(eval drone_id + 1)" />
+        </include>
+
+    </group>
+    <!-- 当 'drone_id' 等于 'num_drones' 时，group的if条件为false，递归自动停止。 -->
+
+</launch>
+
+  

@@ -1,0 +1,84 @@
+--- /home/lishu2/PX4-Autopilot/Tools/sitl_gazebo/include/gazebo_gps_plugin.h	2026-07-25 00:03:21.317110601 +0800
++++ gazebo_gps_plugin.h	2026-09-17 22:59:15.595830705 +0800
+@@ -30,6 +30,7 @@
+ #include <math.h>
+ #include <cstdio>
+ #include <cstdlib>
++#include <mutex>
+ #include <queue>
+ #include <random>
+ 
+@@ -111,6 +112,9 @@
+   static constexpr double gps_delay = 0.12;           // 120 ms
+   static constexpr int gps_buffer_size_max = 1000;
+   std::queue<sensor_msgs::msgs::SITLGps> gps_delay_buffer;
++  // 2026-09-18: push 在世界线程(OnWorldUpdate)，pop 在传感器线程(OnSensorUpdate)，
++  // 原实现无锁 + 先 front() 后判 empty() -> 堆损坏/SIGABRT（gdb 已抓到）。
++  mutable std::mutex gps_buffer_mutex_;
+ 
+   ignition::math::Vector3d gps_bias;
+   ignition::math::Vector3d noise_gps_pos;
+--- /home/lishu2/PX4-Autopilot/Tools/sitl_gazebo/src/gazebo_gps_plugin.cpp	2026-07-25 00:03:21.713126614 +0800
++++ gazebo_gps_plugin.cpp	2026-09-17 22:59:15.595830705 +0800
+@@ -314,7 +314,10 @@
+   gps_msg.set_velocity_up(velocity_current_W.Z() - noise_gps_vel.Z());
+ 
+   // add msg to buffer
+-  gps_delay_buffer.push(gps_msg);
++  {
++    std::lock_guard<std::mutex> lock(gps_buffer_mutex_);
++    gps_delay_buffer.push(gps_msg);
++  }
+ 
+   last_time_ = current_time_;
+ }
+@@ -326,27 +329,31 @@
+   if ((current_time_ - last_gps_time_).Double() > 1 / parentSensor_->UpdateRate()) {
+     last_gps_time_ = current_time_;
+ 
+-    while (true) {
+-      gps_msg = gps_delay_buffer.front();
+-      double gps_current_delay = current_time_.Double() - gps_delay_buffer.front().time_usec() / 1e6f;
+-
+-      if (gps_delay_buffer.empty()) {
+-        // abort if buffer is empty already
+-        break;
+-      }
+-      // remove data that is too old or if buffer size is too large
+-      if (gps_current_delay >= gps_delay) {
+-        gps_delay_buffer.pop();
+-      // remove data if buffer too large
+-      } else if (gps_delay_buffer.size() > gps_buffer_size_max) {
+-        gps_delay_buffer.pop();
+-      } else {
+-        // if we get here, we have good data, stop
+-        break;
++    bool has_msg = false;
++    {
++      std::lock_guard<std::mutex> lock(gps_buffer_mutex_);
++      // 先判空再操作（原实现先 front() 后 empty()，空队列时是 UB）
++      while (!gps_delay_buffer.empty()) {
++        const double gps_current_delay =
++            current_time_.Double() - gps_delay_buffer.front().time_usec() / 1e6f;
++        if (gps_current_delay >= gps_delay ||
++            gps_delay_buffer.size() > gps_buffer_size_max) {
++          gps_msg = gps_delay_buffer.front();
++          has_msg = true;
++          gps_delay_buffer.pop();
++        } else {
++          gps_msg = gps_delay_buffer.front();   // 边界元素：延迟最接近 gps_delay
++          has_msg = true;
++          break;
++        }
+       }
+     }
+     // publish SITLGps msg at the defined update rate
+-    gps_pub_->Publish(gps_msg);
++    // 注意：队列为空时原实现会把默认构造的 gps_msg（time_usec=0 / lat=lon=0）也发出去，
++    // 会让 EKF 收到一次"零时刻零坐标"的坏 GPS（位姿跳变）。这里不再发。
++    if (has_msg && gps_pub_) {
++      gps_pub_->Publish(gps_msg);
++    }
+   }
+ }
+ } // namespace gazebo
